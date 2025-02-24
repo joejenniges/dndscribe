@@ -1,0 +1,11 @@
+# discord.py==2.5.0
+# discord-ext-voice-recv==0.4.2a145
+# pynacl==1.5.0
+# numpy==2.0.2
+# openai-whisper==20240930
+
+discord.py[voice]
+numpy
+openai-whisper
+torch
+discord-ext-voice-recv @ git+https://github.com/Aviana/discord-ext-voice-recv
