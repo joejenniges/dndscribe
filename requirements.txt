@@ -8,4 +8,10 @@ discord.py[voice]
 numpy
 openai-whisper
 torch
-discord-ext-voice-recv @ git+https://github.com/Aviana/discord-ext-voice-recv
+discord-ext-voice-recv @ git+https://github.com/joejenniges/discord-ext-voice-recv
+dotenv
+langchain-community
+langchain-ollama
+gpt4all
+scipy
+ffmpeg-python

@@ -3,6 +3,9 @@
 
 .env
 models/
+ollama/
+recordings/
+*.wav
 ### Python ###
 # Byte-compiled / optimized / DLL files
 __pycache__/
