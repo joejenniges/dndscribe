@@ -22,8 +22,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Create necessary directories
 RUN mkdir -p recordings && \
     mkdir -p models && \
-    mkdir -p debug_packets && \
-    mkdir -p /tmp/audio_processing
+    mkdir -p /tmp/audio_processing && \
+    mkdir -p logs
 
 # Set environment variables for better performance
 ENV OMP_NUM_THREADS=4 \

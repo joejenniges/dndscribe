@@ -1,17 +1,18 @@
-# discord.py==2.5.0
-# discord-ext-voice-recv==0.4.2a145
-# pynacl==1.5.0
-# numpy==2.0.2
-# openai-whisper==20240930
-
-discord.py[voice]
+dotenv
+ffmpeg-python
+gpt4all
+transformers
+memory-profiler>=0.61.0
 numpy
 openai-whisper
-torch
-discord-ext-voice-recv @ git+https://github.com/joejenniges/discord-ext-voice-recv
-dotenv
-langchain-community
-langchain-ollama
-gpt4all
+psutil>=5.9.0
+py-cord[voice]
+reloadium
 scipy
-ffmpeg-python
+soundfile
+torch
+langchain==0.3.23
+langchain-community==0.3.21
+langchain-core==0.3.51
+langchain-ollama==0.3.0
+langchain-text-splitters==0.3.8

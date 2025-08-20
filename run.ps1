@@ -17,7 +17,6 @@ docker stop dndscribe-bot 2>$null
 # Run the container with optimized settings
 Write-Host "Starting dndscribe-bot container with improved network settings..."
 docker run `
-    --rm `
     --memory=$MEMORY `
     --memory-swap=$MEMORY `
     --cpus=$CPUS `
@@ -27,6 +26,7 @@ docker run `
     -v ${PWD}/.env:/app/.env `
     -v ${PWD}/recordings:/app/recordings `
     -v ${PWD}/models:/app/models `
+    -v ${PWD}/logs:/app/logs `
     -v ${tempDir}:/tmp/audio_processing `
     --name dndscribe-bot `
     dndscribe
