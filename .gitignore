@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+recordings/
+logs/
+models/
+ignored.txt
+hotwords.txt
+character-names.json
+.venv/

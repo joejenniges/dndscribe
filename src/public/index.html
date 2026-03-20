@@ -1,0 +1,3246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>dndscribe</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #141414;
+    color: #e0e0e0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Header */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    background: #1c1c1c;
+    border-bottom: 1px solid #2a2a2a;
+    gap: 12px;
+  }
+  header h1 { font-size: 18px; font-weight: 600; color: #e94560; white-space: nowrap; }
+
+  .header-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    justify-content: center;
+  }
+  .header-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 8px;
+    border-right: 1px solid #333;
+  }
+  .header-group:last-child { border-right: none; }
+
+  .recording-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #888;
+  }
+  .rec-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: #555;
+  }
+  .rec-dot.active {
+    background: #e94560;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .channel-picker { position: relative; }
+  .channel-btn, .header-btn {
+    background: #2a2a2a;
+    color: #e0e0e0;
+    border: 1px solid #333;
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .channel-btn:hover, .header-btn:hover { background: #333; }
+  .channel-dropdown {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    background: #1c1c1c;
+    border: 1px solid #2a2a2a;
+    border-radius: 4px;
+    min-width: 220px;
+    z-index: 50;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+  .channel-dropdown.open { display: block; }
+  .channel-item {
+    padding: 8px 14px;
+    cursor: pointer;
+    font-size: 13px;
+    border-bottom: 1px solid #2a2a2a;
+  }
+  .channel-item:last-child { border-bottom: none; }
+  .channel-item:hover { background: #2a2a2a; }
+  .channel-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .channel-item .member-count { color: #555; font-size: 11px; }
+  .channel-item-members {
+    color: #666;
+    font-size: 11px;
+    margin-top: 3px;
+    line-height: 1.4;
+  }
+
+  .leave-btn {
+    background: #e94560;
+    color: white;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    display: none;
+  }
+  .leave-btn:hover { background: #c73e54; }
+  .leave-btn.visible { display: inline-block; }
+
+  /* Save recordings toggle */
+  .save-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #888;
+  }
+  .save-toggle input[type="checkbox"] { cursor: pointer; }
+  .save-toggle.active { color: #4caf50; }
+
+  /* Session picker */
+  .session-picker {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .session-picker select {
+    background: #2a2a2a;
+    color: #e0e0e0;
+    border: 1px solid #333;
+    padding: 5px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    max-width: 200px;
+  }
+  .session-picker select:focus { outline: 1px solid #e94560; }
+  .session-action-btn {
+    background: none;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 4px;
+    opacity: 0.7;
+  }
+  .session-action-btn:hover { opacity: 1; }
+  .session-action-btn.confirm { color: #e94560; opacity: 1; }
+
+  .name-toggle {
+    background: #2a2a2a;
+    color: #e0e0e0;
+    border: 1px solid #333;
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .name-toggle:hover { background: #333; }
+
+  /* Merge modal */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 200;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: #1c1c1c;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    width: 800px;
+    max-width: 95vw;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+  }
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid #2a2a2a;
+    font-weight: 600;
+  }
+  .modal-close {
+    background: none;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    font-size: 18px;
+  }
+  .modal-close:hover { color: #e0e0e0; }
+  .modal-body {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+    min-height: 300px;
+  }
+  .modal-left {
+    width: 280px;
+    border-right: 1px solid #2a2a2a;
+    display: flex;
+    flex-direction: column;
+    padding: 12px;
+    gap: 8px;
+  }
+  .modal-right {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+  }
+  .modal-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-top: 1px solid #2a2a2a;
+    gap: 8px;
+  }
+  .modal-footer input {
+    flex: 1;
+    background: #141414;
+    border: 1px solid #2a2a2a;
+    color: #e0e0e0;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  .modal-footer input:focus { outline: 1px solid #e94560; border-color: #e94560; }
+  .modal-footer button {
+    background: #e94560;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .modal-footer button:hover { background: #c73e54; }
+  .modal-footer button:disabled { background: #555; cursor: not-allowed; }
+
+  .merge-session-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0;
+  }
+  .merge-session-item .drag-handle {
+    cursor: grab;
+    color: #555;
+    font-size: 16px;
+    user-select: none;
+  }
+  .merge-session-item .drag-handle:active { cursor: grabbing; }
+  .merge-session-item select {
+    flex: 1;
+    background: #2a2a2a;
+    color: #e0e0e0;
+    border: 1px solid #333;
+    padding: 4px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  .merge-session-item .remove-merge-btn {
+    background: none;
+    border: none;
+    color: #555;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .merge-session-item .remove-merge-btn:hover { color: #e94560; }
+  .add-merge-btn {
+    background: #2a2a2a;
+    color: #e0e0e0;
+    border: 1px solid #333;
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    align-self: flex-start;
+  }
+  .add-merge-btn:hover { background: #333; }
+
+  .preview-separator {
+    text-align: center;
+    color: #e94560;
+    font-size: 11px;
+    padding: 6px 0;
+    border-top: 1px dashed #333;
+    margin-top: 4px;
+  }
+  .preview-line {
+    font-size: 12px;
+    padding: 2px 0;
+    color: #aaa;
+  }
+  .preview-line .pv-time { color: #555; margin-right: 6px; }
+  .preview-line .pv-speaker { color: #e94560; font-weight: 600; }
+  .preview-dots { color: #555; text-align: center; padding: 4px 0; font-size: 12px; }
+
+  .status-indicators {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: #888;
+  }
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #555;
+  }
+  .status-dot.connected { background: #4caf50; }
+
+  /* Main layout */
+  .container {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* Transcription panel */
+  .transcript-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid #2a2a2a;
+  }
+  .transcript-header {
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #888;
+    background: #1c1c1c;
+    border-bottom: 1px solid #2a2a2a;
+  }
+  .transcript-lines {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+  }
+  .line {
+    padding: 6px 16px;
+    font-size: 14px;
+    line-height: 1.5;
+    display: flex;
+    gap: 8px;
+    border-bottom: 1px solid #1e1e1e;
+    border-left: 3px solid transparent;
+  }
+  .line:hover { background: #1c1c1c; }
+  .line.has-audio { border-left-color: #4caf50; }
+  .line-time {
+    color: #555;
+    font-size: 12px;
+    white-space: nowrap;
+    min-width: 60px;
+    padding-top: 2px;
+  }
+  .line-speaker {
+    color: #e94560;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+  }
+  .line-speaker:hover { text-decoration: underline; }
+  .line.selected { background: #2a2a2a !important; }
+  .line.selected .line-speaker { color: #ff7b91; }
+  .line.selected.search-match { background: #2a3a2a !important; }
+
+  /* Bulk nickname editor - fixed to top of right sidebar */
+  .nickname-editor {
+    display: none;
+    background: #141414;
+    border-bottom: 1px solid #e94560;
+    padding: 10px 12px;
+    overflow: hidden;
+  }
+  .nickname-editor.open { display: block; }
+  .nickname-editor h3 {
+    font-size: 13px;
+    color: #888;
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+  .nickname-editor-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+    overflow: hidden;
+  }
+  .nickname-editor-row .ne-username {
+    color: #aaa;
+    font-size: 12px;
+    min-width: 80px;
+    max-width: 80px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .nickname-editor-row input {
+    flex: 1;
+    min-width: 0;
+    background: #141414;
+    border: 1px solid #2a2a2a;
+    color: #e0e0e0;
+    padding: 4px 8px;
+    border-radius: 3px;
+    font-size: 13px;
+    box-sizing: border-box;
+  }
+  .nickname-editor-row input:focus { outline: 1px solid #e94560; border-color: #e94560; }
+  .nickname-editor-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .nickname-editor-actions button {
+    padding: 5px 12px;
+    border-radius: 4px;
+    border: none;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .ne-save { background: #e94560; color: white; font-weight: 600; }
+  .ne-save:hover { background: #c73e54; }
+  .ne-cancel { background: #2a2a2a; color: #e0e0e0; }
+  .ne-cancel:hover { background: #333; }
+  .line-text {
+    flex: 1;
+    cursor: text;
+    border-radius: 3px;
+    padding: 0 4px;
+    min-height: 1.5em;
+    outline: none;
+  }
+  .line-text:hover { background: #1e1e1e; }
+  .line-text:focus { background: #2a2a2a; outline: 1px solid #e94560; }
+  .line-text::selection { background: rgba(233, 69, 96, 0.4); color: #fff; }
+
+  /* Word highlight overlay shown during drag */
+  .word-highlight {
+    position: absolute;
+    background: rgba(233, 69, 96, 0.3);
+    border: 1px solid #e94560;
+    border-radius: 2px;
+    pointer-events: none;
+    z-index: 10;
+  }
+  .line-actions {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    white-space: nowrap;
+  }
+  .play-btn, .delete-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+    opacity: 0.5;
+  }
+  .play-btn { color: #4caf50; }
+  .play-btn:hover { opacity: 1; }
+  .play-btn.playing { color: #e94560; opacity: 1; }
+  .delete-btn { color: #888; }
+  .delete-btn:hover { opacity: 1; }
+  .delete-btn.confirm { color: #e94560; opacity: 1; }
+
+  /* Right sidebar */
+  .sidebar {
+    width: 280px;
+    min-width: 280px;
+    max-width: 280px;
+    display: flex;
+    flex-direction: column;
+    background: #1c1c1c;
+    overflow: hidden;
+  }
+
+  /* Members panel */
+  .members-panel { border-bottom: 1px solid #2a2a2a; }
+  .panel-header {
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #888;
+    border-bottom: 1px solid #2a2a2a;
+  }
+  .members-list { max-height: 250px; overflow-y: auto; }
+  .member-item {
+    padding: 6px 12px;
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    border-bottom: 1px solid #1e1e1e;
+  }
+  .member-username { color: #aaa; font-size: 12px; }
+  .member-char-input {
+    background: #141414;
+    border: 1px solid #2a2a2a;
+    color: #e0e0e0;
+    padding: 3px 8px;
+    border-radius: 3px;
+    font-size: 13px;
+    width: 100%;
+  }
+  .member-char-input:focus { outline: 1px solid #e94560; border-color: #e94560; }
+  .member-char-input::placeholder { color: #555; }
+  .member-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .member-row .member-char-input { flex: 1; }
+  .ignore-btn {
+    background: none;
+    border: none;
+    color: #555;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 4px;
+    line-height: 1;
+    title: 'Ignore user';
+  }
+  .ignore-btn:hover { color: #e94560; }
+  .members-empty {
+    padding: 12px;
+    text-align: center;
+    color: #555;
+    font-size: 12px;
+  }
+
+  /* Ignored users panel */
+  .ignored-panel { border-top: 1px solid #2a2a2a; }
+  .ignored-list { max-height: 120px; overflow-y: auto; padding: 4px 0; }
+  .ignored-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 12px;
+    font-size: 12px;
+    color: #888;
+  }
+  .ignored-item:hover { background: #141414; }
+  .unignore-btn {
+    background: none;
+    border: none;
+    color: #555;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+    line-height: 1;
+  }
+  .unignore-btn:hover { color: #4caf50; }
+  .ignored-empty {
+    padding: 8px 12px;
+    text-align: center;
+    color: #555;
+    font-size: 11px;
+  }
+
+  /* Hotwords panel */
+  .hotwords-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .hotwords-add {
+    display: flex;
+    padding: 8px;
+    gap: 6px;
+    border-bottom: 1px solid #2a2a2a;
+  }
+  .hotwords-add input {
+    flex: 1;
+    background: #141414;
+    border: 1px solid #2a2a2a;
+    color: #e0e0e0;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  .hotwords-add input:focus { outline: 1px solid #e94560; border-color: #e94560; }
+  .hotwords-add button {
+    background: #e94560;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .hotwords-add button:hover { background: #c73e54; }
+  .hotwords-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+  .hotword-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 12px;
+    font-size: 13px;
+  }
+  .hotword-item:hover { background: #141414; }
+  .hotword-item span {
+    cursor: pointer;
+  }
+  .hotword-item span:hover { text-decoration: underline; }
+  .hotword-edit-input {
+    background: #141414;
+    border: 1px solid #e94560;
+    color: #e0e0e0;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 13px;
+    width: 120px;
+  }
+  .hotword-remove {
+    background: none;
+    border: none;
+    color: #555;
+    cursor: pointer;
+    font-size: 16px;
+    padding: 0 4px;
+    line-height: 1;
+  }
+  .hotword-remove:hover { color: #e94560; }
+
+  /* Toast notifications */
+  .toast-container {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 100;
+  }
+  .toast {
+    background: #2a2a2a;
+    border: 1px solid #e94560;
+    color: #e0e0e0;
+    padding: 10px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    animation: fadeIn 0.2s ease;
+    max-width: 300px;
+  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } }
+
+  .empty-state {
+    padding: 40px;
+    text-align: center;
+    color: #555;
+    font-size: 14px;
+  }
+
+  /* Mobile responsive */
+  @media (max-width: 1100px) {
+    header {
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 8px 12px;
+    }
+    .header-controls {
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .header-group {
+      padding: 2px 6px;
+      border-right: none;
+    }
+    .container {
+      flex-direction: column;
+    }
+    .sidebar {
+      width: 100% !important;
+      min-width: 100% !important;
+      max-width: 100% !important;
+      border-top: 1px solid #2a2a2a;
+      max-height: 40vh;
+      overflow-y: auto;
+    }
+    .transcript-panel {
+      border-right: none;
+      min-height: 50vh;
+    }
+    .search-bar input { width: 120px; }
+    .confidence-filter input[type="range"] { width: 40px; }
+    .session-picker select { max-width: 140px; }
+  }
+
+  @media (max-width: 600px) {
+    .header-group { padding: 2px 4px; }
+    .line { padding: 4px 8px; font-size: 13px; }
+    .line-time { font-size: 11px; min-width: 50px; }
+    .line-speaker { font-size: 13px; }
+  }
+
+  /* Sidebar toggle for mobile */
+  .sidebar-toggle {
+    display: none;
+    background: #2a2a2a;
+    border: none;
+    color: #e0e0e0;
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    width: 100%;
+    text-align: center;
+    border-top: 1px solid #333;
+  }
+  .sidebar-toggle:hover { background: #333; }
+  @media (max-width: 1100px) {
+    .sidebar-toggle { display: block; }
+    .sidebar.collapsed .members-panel,
+    .sidebar.collapsed .ignored-panel,
+    .sidebar.collapsed .hotwords-panel,
+    .sidebar.collapsed .nickname-editor { display: none; }
+  }
+
+  /* Search */
+  .search-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .search-bar input {
+    background: #2a2a2a;
+    border: 1px solid #333;
+    color: #e0e0e0;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    width: 160px;
+  }
+  .search-bar input:focus { outline: 1px solid #e94560; border-color: #e94560; }
+  .search-bar { position: relative; }
+  .search-bar .search-count { color: #555; font-size: 11px; white-space: nowrap; }
+  .search-autocomplete {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    background: #1c1c1c;
+    border: 1px solid #333;
+    border-radius: 4px;
+    min-width: 180px;
+    z-index: 60;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .search-autocomplete.open { display: block; }
+  .search-ac-item {
+    padding: 6px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .search-ac-item:hover, .search-ac-item.active { background: #2a2a2a; }
+  .search-ac-item .ac-color {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .search-ac-item .ac-nick { color: #888; font-size: 11px; }
+  .search-bar .search-filter-btn {
+    background: none;
+    border: 1px solid #333;
+    color: #555;
+    cursor: pointer;
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  .search-bar .search-filter-btn:hover { border-color: #555; color: #aaa; }
+  .search-bar .search-filter-btn.active { border-color: #4caf50; color: #4caf50; }
+  .line.search-hidden { display: none; }
+  .line.search-match { background: #1a2a1a; }
+  .line.search-highlight { background: #1a331a; }
+  mark { background: #4caf50; color: #000; border-radius: 2px; padding: 0 2px; font-weight: 600; }
+
+  /* Condensed mode: hide speaker/time on continuation lines */
+  .line.condensed-continuation .line-speaker { display: none; }
+  .line.condensed-continuation .line-time { visibility: hidden; }
+  .line.condensed-continuation { border-bottom: none; padding-top: 2px; padding-bottom: 2px; }
+  .line.condensed-continuation .line-confidence { visibility: visible; }
+
+  /* Confidence hidden mode */
+  .confidence-off .line-confidence { display: none; }
+
+  /* Confidence indicator */
+  .line-confidence {
+    font-size: 10px;
+    color: #555;
+    min-width: 28px;
+    text-align: center;
+    padding-top: 3px;
+  }
+  .line-confidence.high { color: #4caf50; }
+  .line-confidence.med { color: #ff9800; }
+  .line-confidence.low { color: #e94560; }
+
+  /* Confidence filter */
+  .confidence-filter {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: #888;
+    white-space: nowrap;
+  }
+  .confidence-filter input[type="range"] {
+    width: 60px;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: #333;
+    border-radius: 2px;
+    outline: none;
+  }
+  .confidence-filter input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #e94560;
+    cursor: pointer;
+  }
+  .confidence-filter .cf-value { min-width: 32px; text-align: right; }
+  .line.confidence-hidden { display: none; }
+
+  /* Waveform canvas in audio player */
+  .ap-waveform-wrap {
+    flex: 1;
+    position: relative;
+    height: 28px;
+    cursor: pointer;
+  }
+  .ap-waveform-wrap canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  .ap-waveform-progress {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 100%;
+    background: rgba(233, 69, 96, 0.2);
+    pointer-events: none;
+  }
+
+  /* Audio player bar */
+  .audio-player-bar {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    background: #1c1c1c;
+    border-top: 1px solid #2a2a2a;
+    height: 42px;
+    min-height: 42px;
+    max-height: 42px;
+  }
+  .audio-player-bar.active { display: flex; }
+  .audio-player-bar .ap-btn {
+    background: none;
+    border: none;
+    color: #e94560;
+    cursor: pointer;
+    font-size: 18px;
+    padding: 0;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+  .audio-player-bar .ap-speaker {
+    color: #e94560;
+    font-weight: 600;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .audio-player-bar .ap-time {
+    color: #888;
+    font-size: 12px;
+    white-space: nowrap;
+    min-width: 80px;
+  }
+  .audio-player-bar .ap-scrub {
+    flex: 1;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: #333;
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+  .audio-player-bar .ap-scrub::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #e94560;
+    cursor: pointer;
+  }
+  .audio-player-bar .ap-close {
+    background: none;
+    border: none;
+    color: #555;
+    cursor: pointer;
+    font-size: 16px;
+  }
+  .audio-player-bar .ap-close:hover { color: #e0e0e0; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>dndscribe</h1>
+
+  <div class="header-controls">
+    <div class="header-group">
+      <div class="recording-status">
+        <div class="rec-dot" id="recDot"></div>
+        <span id="recText">Not recording</span>
+      </div>
+      <div class="channel-picker">
+        <button class="channel-btn" id="channelBtn">Join Channel</button>
+        <div class="channel-dropdown" id="channelDropdown"></div>
+      </div>
+      <button class="leave-btn" id="pauseBtn" style="background:#ff9800">Pause</button>
+    <button class="leave-btn" id="leaveBtn">Leave</button>
+      <div class="save-toggle" id="saveToggle">
+        <input type="checkbox" id="saveCheck" />
+        <label for="saveCheck">Save Audio</label>
+      </div>
+    </div>
+
+    <div class="header-group">
+      <div class="session-picker">
+        <select id="sessionSelect"><option value="">No sessions</option></select>
+        <button class="session-action-btn" id="deleteSessionBtn" title="Delete session">&#128465;</button>
+        <button class="session-action-btn" id="mergeSessionBtn" title="Merge sessions">&#8645;</button>
+      </div>
+    </div>
+
+    <div class="header-group">
+      <button class="name-toggle" id="nameToggle" title="Toggle name display">Nickname</button>
+      <button class="name-toggle" id="condenseToggle" title="Toggle condensed view">Condensed</button>
+      <button class="name-toggle" id="confToggle" title="Toggle confidence display">Conf: On</button>
+      <div class="confidence-filter">
+        <span>Conf:</span>
+        <input type="range" id="confSlider" min="0" max="100" value="100" title="Show lines at or below this confidence" />
+        <span class="cf-value" id="confValue">100%</span>
+      </div>
+    </div>
+
+    <div class="header-group">
+      <div class="search-bar">
+        <input type="text" id="searchInput" placeholder="Search... (@user, /regex/)" autocomplete="off" data-1p-ignore data-lpignore="true" data-bwignore />
+        <div class="search-autocomplete" id="searchAutocomplete"></div>
+        <span class="search-count" id="searchCount"></span>
+        <button class="search-filter-btn" id="searchFilterBtn" title="Show only matching lines">Filter</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="status-indicators">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">Disconnected</span>
+  </div>
+</header>
+
+<div class="container">
+  <div class="transcript-panel">
+    <div class="transcript-header">Transcription</div>
+    <div class="transcript-lines" id="lines">
+      <div class="empty-state" id="emptyState">Waiting for transcription...</div>
+    </div>
+  </div>
+
+  <div class="sidebar" id="sidebar">
+    <button class="sidebar-toggle" id="sidebarToggle">Sidebar &#9660;</button>
+    <div class="nickname-editor" id="nicknameEditor"></div>
+    <div class="members-panel">
+      <div class="panel-header">Voice Members</div>
+      <div class="members-list" id="membersList">
+        <div class="members-empty" id="membersEmpty">Not in a channel</div>
+      </div>
+    </div>
+
+    <div class="ignored-panel">
+      <div class="panel-header">Ignored Users</div>
+      <div class="ignored-list" id="ignoredList">
+        <div class="ignored-empty" id="ignoredEmpty">No ignored users</div>
+      </div>
+    </div>
+
+    <div class="hotwords-panel">
+      <div class="panel-header">Hotwords</div>
+      <div class="hotwords-add">
+        <input type="text" id="hotwordInput" placeholder="Add hotword..." autocomplete="off" data-1p-ignore data-lpignore="true" data-bwignore />
+        <button id="hotwordAddBtn">Add</button>
+      </div>
+      <div class="hotwords-list" id="hotwordsList"></div>
+    </div>
+  </div>
+</div>
+
+<div class="audio-player-bar" id="audioPlayerBar">
+  <button class="ap-btn" id="apPlayBtn">&#9654;</button>
+  <span class="ap-speaker" id="apSpeaker"></span>
+  <span class="ap-time" id="apTime">0:00 / 0:00</span>
+  <div class="ap-waveform-wrap" id="apWaveformWrap">
+    <canvas id="apWaveform"></canvas>
+    <div class="ap-waveform-progress" id="apWaveformProgress"></div>
+  </div>
+  <input type="range" class="ap-scrub" id="apScrub" min="0" max="100" value="0" style="display:none" />
+  <button class="ap-close" id="apClose">&times;</button>
+</div>
+
+<div class="modal-overlay" id="mergeModal">
+  <div class="modal">
+    <div class="modal-header">
+      <span>Merge Sessions</span>
+      <button class="modal-close" id="mergeModalClose">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-left">
+        <div id="mergeSessionList"></div>
+        <button class="add-merge-btn" id="addMergeSession">+ Add Session</button>
+      </div>
+      <div class="modal-right" id="mergePreview">
+        <div style="color:#555;text-align:center;padding:20px;">Select sessions to see preview</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <input type="text" id="mergeNameInput" placeholder="Merged session name..." autocomplete="off" data-1p-ignore data-lpignore="true" data-bwignore />
+      <button id="mergeConfirmBtn">Merge</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-container" id="toasts"></div>
+
+<script>
+const linesEl = document.getElementById('lines');
+const emptyState = document.getElementById('emptyState');
+const hotwordsList = document.getElementById('hotwordsList');
+const hotwordInput = document.getElementById('hotwordInput');
+const hotwordAddBtn = document.getElementById('hotwordAddBtn');
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const toasts = document.getElementById('toasts');
+const recDot = document.getElementById('recDot');
+const recText = document.getElementById('recText');
+const channelBtn = document.getElementById('channelBtn');
+const channelDropdown = document.getElementById('channelDropdown');
+const leaveBtn = document.getElementById('leaveBtn');
+const membersList = document.getElementById('membersList');
+const membersEmpty = document.getElementById('membersEmpty');
+const saveCheck = document.getElementById('saveCheck');
+const saveToggle = document.getElementById('saveToggle');
+const sessionSelect = document.getElementById('sessionSelect');
+const ignoredList = document.getElementById('ignoredList');
+const ignoredEmpty = document.getElementById('ignoredEmpty');
+
+let ws = null;
+let autoScroll = true;
+let isRecording = false;
+let currentSessionId = null;
+// Name display modes: 'nickname', 'discord', 'both'
+let nameMode = 'nickname';
+const nameToggleBtn = document.getElementById('nameToggle');
+
+linesEl.addEventListener('scroll', () => {
+  const threshold = 50;
+  autoScroll = (linesEl.scrollTop + linesEl.clientHeight >= linesEl.scrollHeight - threshold);
+});
+
+function scrollToBottom() {
+  if (autoScroll) linesEl.scrollTop = linesEl.scrollHeight;
+}
+
+function showToast(message, duration) {
+  duration = duration || 4000;
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = message;
+  toasts.appendChild(el);
+  setTimeout(function() { el.remove(); }, duration);
+}
+
+function formatTime(isoString) {
+  try {
+    const d = new Date(isoString);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  } catch (e) {
+    return '';
+  }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// ---- Sidebar toggle (mobile) ----
+var sidebarEl = document.getElementById('sidebar');
+var sidebarToggle = document.getElementById('sidebarToggle');
+sidebarEl.classList.add('collapsed');
+sidebarToggle.addEventListener('click', function() {
+  sidebarEl.classList.toggle('collapsed');
+  sidebarToggle.innerHTML = sidebarEl.classList.contains('collapsed') ? 'Sidebar &#9660;' : 'Sidebar &#9650;';
+});
+
+// ---- Speaker colors ----
+// Assign a distinct color to each speaker based on their discord username.
+var speakerColorPalette = [
+  '#e94560', '#4caf50', '#42a5f5', '#ff9800', '#ab47bc',
+  '#26c6da', '#ef5350', '#66bb6a', '#ffa726', '#7e57c2',
+  '#ec407a', '#29b6f6', '#9ccc65', '#ffca28', '#8d6e63',
+];
+var speakerColorMap = {};
+var speakerColorIdx = 0;
+
+function getSpeakerColor(discordUsername) {
+  if (!discordUsername) return speakerColorPalette[0];
+  if (!speakerColorMap[discordUsername]) {
+    speakerColorMap[discordUsername] = speakerColorPalette[speakerColorIdx % speakerColorPalette.length];
+    speakerColorIdx++;
+  }
+  return speakerColorMap[discordUsername];
+}
+
+// ---- Condensed view toggle ----
+var condenseToggle = document.getElementById('condenseToggle');
+var isCondensed = true; // default on
+condenseToggle.classList.add('active');
+condenseToggle.style.borderColor = '#4caf50';
+condenseToggle.style.color = '#4caf50';
+
+condenseToggle.addEventListener('click', function() {
+  isCondensed = !isCondensed;
+  if (isCondensed) {
+    condenseToggle.textContent = 'Condensed';
+    condenseToggle.style.borderColor = '#4caf50';
+    condenseToggle.style.color = '#4caf50';
+  } else {
+    condenseToggle.textContent = 'Expanded';
+    condenseToggle.style.borderColor = '';
+    condenseToggle.style.color = '';
+  }
+  applyCondensedView();
+});
+
+function applyCondensedView() {
+  var allLines = document.querySelectorAll('.line');
+  var prevUser = null;
+  var prevNick = null;
+  for (var i = 0; i < allLines.length; i++) {
+    var el = allLines[i];
+    var user = el.dataset.discordUsername;
+    var nick = el.dataset.nickname || '';
+    // Condense only if same user AND same nickname
+    if (isCondensed && prevUser === user && prevNick === nick && user) {
+      el.classList.add('condensed-continuation');
+    } else {
+      el.classList.remove('condensed-continuation');
+    }
+    if (!el.classList.contains('search-hidden') && !el.classList.contains('confidence-hidden')) {
+      prevUser = user;
+      prevNick = nick;
+    }
+  }
+}
+
+// ---- Confidence display toggle ----
+var confToggle = document.getElementById('confToggle');
+var showConfidence = true;
+
+confToggle.addEventListener('click', function() {
+  showConfidence = !showConfidence;
+  confToggle.textContent = 'Conf: ' + (showConfidence ? 'On' : 'Off');
+  if (showConfidence) {
+    document.body.classList.remove('confidence-off');
+  } else {
+    document.body.classList.add('confidence-off');
+  }
+});
+
+// ---- Confidence filter ----
+// Hides lines ABOVE the threshold so you can focus on low-confidence ones
+var confSlider = document.getElementById('confSlider');
+var confValueEl = document.getElementById('confValue');
+var confThreshold = 100;
+
+confSlider.addEventListener('input', function() {
+  confThreshold = parseInt(confSlider.value, 10);
+  confValueEl.textContent = confThreshold + '%';
+  applyConfidenceFilter();
+});
+
+function applyConfidenceFilter() {
+  document.querySelectorAll('.line').forEach(function(el) {
+    var confEl = el.querySelector('.line-confidence');
+    if (!confEl) {
+      // No confidence data -- always show
+      el.classList.remove('confidence-hidden');
+      return;
+    }
+    var pct = parseInt(confEl.textContent, 10);
+    if (isNaN(pct)) {
+      el.classList.remove('confidence-hidden');
+      return;
+    }
+    // Hide if confidence is ABOVE the threshold (we want to see low-confidence lines)
+    if (pct > confThreshold) {
+      el.classList.add('confidence-hidden');
+    } else {
+      el.classList.remove('confidence-hidden');
+    }
+  });
+}
+
+// ---- Name display toggle ----
+
+function getDisplayName(discordUsername, nickname) {
+  switch (nameMode) {
+    case 'discord': return discordUsername;
+    case 'both': return nickname ? discordUsername + ' (' + nickname + ')' : discordUsername;
+    default: return nickname || discordUsername; // 'nickname' mode
+  }
+}
+
+nameToggleBtn.addEventListener('click', function() {
+  if (nameMode === 'nickname') { nameMode = 'discord'; nameToggleBtn.textContent = 'Discord'; }
+  else if (nameMode === 'discord') { nameMode = 'both'; nameToggleBtn.textContent = 'Both'; }
+  else { nameMode = 'nickname'; nameToggleBtn.textContent = 'Nickname'; }
+  // Update all displayed names
+  document.querySelectorAll('.line-speaker').forEach(function(el) {
+    var line = el.closest('.line');
+    if (line) {
+      el.textContent = getDisplayName(line.dataset.discordUsername, line.dataset.nickname) + ':';
+    }
+  });
+});
+
+// ---- Recording status ----
+
+function updateStatus(status) {
+  isRecording = status.recording;
+  recDot.classList.toggle('active', status.recording);
+  recText.textContent = status.recording ? ('Recording: ' + status.channelName) : 'Not recording';
+  leaveBtn.classList.toggle('visible', status.recording);
+  pauseBtn.classList.toggle('visible', status.recording);
+  channelBtn.style.display = status.recording ? 'none' : '';
+  if (!status.recording) { transcriptionPaused = false; updatePauseBtn(); }
+}
+
+// ---- Save recordings toggle ----
+
+saveCheck.addEventListener('change', async function() {
+  try {
+    await fetch('/api/save-recordings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: saveCheck.checked }),
+    });
+  } catch (e) {
+    showToast('Failed to toggle save: ' + e.message);
+  }
+});
+
+function updateSaveRecordings(enabled) {
+  saveCheck.checked = enabled;
+  saveToggle.classList.toggle('active', enabled);
+}
+
+// ---- Session picker ----
+
+function renderSessions(sessions) {
+  allSessions = sessions || [];
+  sessionSelect.innerHTML = '';
+  if (!sessions || sessions.length === 0) {
+    sessionSelect.innerHTML = '<option value="">No sessions</option>';
+    return;
+  }
+  for (const s of sessions) {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    const d = new Date(s.startedAt);
+    const label = d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+    opt.textContent = (s.channelName || 'Session') + ' - ' + label + (s.endedAt ? '' : ' (active)');
+    sessionSelect.appendChild(opt);
+  }
+  // Select the current/latest session
+  if (currentSessionId) {
+    sessionSelect.value = currentSessionId;
+  } else if (sessions.length > 0) {
+    sessionSelect.value = sessions[0].id;
+    currentSessionId = sessions[0].id;
+  }
+}
+
+sessionSelect.addEventListener('change', function() {
+  const sid = parseInt(sessionSelect.value, 10);
+  if (sid && sid !== currentSessionId) {
+    currentSessionId = sid;
+    loadSession(sid);
+  }
+});
+
+async function loadSession(sessionId) {
+  try {
+    const res = await fetch('/api/lines?session=' + sessionId);
+    const lines = await res.json();
+    clearLines();
+    for (const line of lines) addLine(line);
+    applyCondensedView();
+  } catch (e) {
+    showToast('Failed to load session: ' + e.message);
+  }
+}
+
+// ---- Channel picker ----
+
+channelBtn.addEventListener('click', async function(e) {
+  e.stopPropagation();
+  if (channelDropdown.classList.contains('open')) {
+    channelDropdown.classList.remove('open');
+    return;
+  }
+  try {
+    const res = await fetch('/api/channels');
+    const channels = await res.json();
+    channelDropdown.innerHTML = '';
+    if (channels.length === 0) {
+      channelDropdown.innerHTML = '<div class="channel-item" style="color:#555">No voice channels</div>';
+    } else {
+      for (const ch of channels) {
+        const item = document.createElement('div');
+        item.className = 'channel-item';
+        const header = document.createElement('div');
+        header.className = 'channel-item-header';
+        header.innerHTML = '<span>' + escapeHtml(ch.name) + '</span><span class="member-count">' + ch.members.length + ' members</span>';
+        item.appendChild(header);
+        if (ch.members.length > 0) {
+          const membersDiv = document.createElement('div');
+          membersDiv.className = 'channel-item-members';
+          membersDiv.textContent = ch.members.join(', ');
+          item.appendChild(membersDiv);
+        }
+        item.addEventListener('click', function() { joinChannel(ch.id); });
+        channelDropdown.appendChild(item);
+      }
+    }
+    channelDropdown.classList.add('open');
+  } catch (e) {
+    showToast('Failed to load channels: ' + e.message);
+  }
+});
+
+document.addEventListener('click', function() { channelDropdown.classList.remove('open'); });
+channelDropdown.addEventListener('click', function(e) { e.stopPropagation(); });
+
+async function joinChannel(channelId) {
+  channelDropdown.classList.remove('open');
+  channelBtn.textContent = 'Joining...';
+  channelBtn.disabled = true;
+  try {
+    const res = await fetch('/api/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelId: channelId }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+  } catch (e) {
+    showToast('Failed to join: ' + e.message);
+  } finally {
+    channelBtn.textContent = 'Join Channel';
+    channelBtn.disabled = false;
+  }
+}
+
+var pauseBtn = document.getElementById('pauseBtn');
+var transcriptionPaused = false;
+
+pauseBtn.addEventListener('click', async function() {
+  try {
+    var res = await fetch('/api/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    var data = await res.json();
+    transcriptionPaused = data.paused;
+    updatePauseBtn();
+  } catch (e) {
+    showToast('Failed to toggle pause: ' + e.message);
+  }
+});
+
+function updatePauseBtn() {
+  if (transcriptionPaused) {
+    pauseBtn.textContent = 'Resume';
+    pauseBtn.style.background = '#4caf50';
+  } else {
+    pauseBtn.textContent = 'Pause';
+    pauseBtn.style.background = '#ff9800';
+  }
+}
+
+leaveBtn.addEventListener('click', async function() {
+  leaveBtn.textContent = 'Leaving...';
+  leaveBtn.disabled = true;
+  try {
+    const res = await fetch('/api/leave', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    if (data.outFile) showToast('Transcription saved: ' + data.outFile);
+  } catch (e) {
+    showToast('Failed to leave: ' + e.message);
+  } finally {
+    leaveBtn.textContent = 'Leave';
+    leaveBtn.disabled = false;
+  }
+});
+
+// ---- Voice members ----
+
+function renderMembers(members) {
+  membersList.innerHTML = '';
+  if (!members || members.length === 0) {
+    membersEmpty.style.display = 'block';
+    membersList.appendChild(membersEmpty);
+    membersEmpty.textContent = isRecording ? 'No other members' : 'Not in a channel';
+    return;
+  }
+  membersEmpty.style.display = 'none';
+  for (const m of members) {
+    const item = document.createElement('div');
+    item.className = 'member-item';
+    const username = document.createElement('div');
+    username.className = 'member-username';
+    username.textContent = m.username;
+    const input = document.createElement('input');
+    input.className = 'member-char-input';
+    input.type = 'text';
+    input.placeholder = 'Character name...';
+    input.value = m.characterName || '';
+    input.dataset.userId = m.id;
+    input.autocomplete = 'off';
+    input.setAttribute('data-1p-ignore', '');
+    input.setAttribute('data-lpignore', 'true');
+    input.setAttribute('data-bwignore', '');
+    let saveTimeout = null;
+    input.addEventListener('input', function() {
+      clearTimeout(saveTimeout);
+      saveTimeout = setTimeout(function() { saveCharacterName(m.id, input.value); }, 500);
+    });
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { clearTimeout(saveTimeout); saveCharacterName(m.id, input.value); input.blur(); }
+    });
+
+    var paletteBtn = document.createElement('button');
+    paletteBtn.className = 'ignore-btn';
+    paletteBtn.textContent = '\ud83c\udfa8';
+    paletteBtn.title = 'Name Palette';
+    paletteBtn.addEventListener('click', function() {
+      window.open('/palette?userId=' + encodeURIComponent(m.id) + '&username=' + encodeURIComponent(m.username), 'palette-' + m.id, 'width=400,height=300,resizable=yes');
+    });
+
+    var ignBtn = document.createElement('button');
+    ignBtn.className = 'ignore-btn';
+    ignBtn.textContent = '\ud83d\udeab';
+    ignBtn.title = 'Ignore user';
+    var ignTimeout = null;
+
+    var row = document.createElement('div');
+    row.className = 'member-row';
+    row.appendChild(input);
+    row.appendChild(paletteBtn);
+
+    ignBtn.addEventListener('click', function() {
+      if (ignBtn.classList.contains('confirm')) {
+        clearTimeout(ignTimeout);
+        ignBtn.classList.remove('confirm');
+        ignBtn.textContent = '\ud83d\udeab';
+        ignoreUserUI(m.id, m.username);
+      } else {
+        ignBtn.classList.add('confirm');
+        ignBtn.textContent = '?';
+        ignTimeout = setTimeout(function() {
+          ignBtn.classList.remove('confirm');
+          ignBtn.textContent = '\ud83d\udeab';
+        }, 3000);
+      }
+    });
+    row.appendChild(ignBtn);
+
+    item.appendChild(username);
+    item.appendChild(row);
+    membersList.appendChild(item);
+  }
+}
+
+async function saveCharacterName(userId, name) {
+  try {
+    await fetch('/api/character-name', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: userId, name: name.trim() || null }),
+    });
+  } catch (e) {
+    showToast('Failed to save character name: ' + e.message);
+  }
+}
+
+// ---- Ignored users ----
+
+function renderIgnoredUsers(users) {
+  ignoredList.innerHTML = '';
+  if (!users || users.length === 0) {
+    ignoredEmpty.style.display = 'block';
+    ignoredList.appendChild(ignoredEmpty);
+    return;
+  }
+  ignoredEmpty.style.display = 'none';
+  for (var i = 0; i < users.length; i++) {
+    var u = users[i];
+    var item = document.createElement('div');
+    item.className = 'ignored-item';
+    var label = document.createElement('span');
+    label.textContent = u.discordUsername;
+    var unBtn = document.createElement('button');
+    unBtn.className = 'unignore-btn';
+    unBtn.textContent = '\u2713';
+    unBtn.title = 'Unignore';
+    (function(userId) {
+      unBtn.addEventListener('click', function() { unignoreUserUI(userId); });
+    })(u.discordUserId);
+    item.appendChild(label);
+    item.appendChild(unBtn);
+    ignoredList.appendChild(item);
+  }
+}
+
+async function ignoreUserUI(userId, username) {
+  try {
+    await fetch('/api/ignore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: userId, username: username }),
+    });
+  } catch (e) {
+    showToast('Failed to ignore user: ' + e.message);
+  }
+}
+
+async function unignoreUserUI(userId) {
+  try {
+    await fetch('/api/unignore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: userId }),
+    });
+  } catch (e) {
+    showToast('Failed to unignore user: ' + e.message);
+  }
+}
+
+// ---- Transcription lines ----
+
+function addLine(line) {
+  emptyState.style.display = 'none';
+
+  const el = document.createElement('div');
+  el.className = 'line';
+  el.dataset.id = line.id;
+  el.dataset.discordUsername = line.discordUsername || '';
+  el.dataset.nickname = line.nickname || '';
+
+  if (line.audioFilenames && line.audioFilenames.length > 0) {
+    el.classList.add('has-audio');
+  }
+
+  const timeEl = document.createElement('span');
+  timeEl.className = 'line-time';
+  timeEl.textContent = formatTime(line.timestamp);
+
+  const speakerEl = document.createElement('span');
+  speakerEl.className = 'line-speaker';
+  speakerEl.style.color = getSpeakerColor(line.discordUsername);
+  speakerEl.textContent = getDisplayName(line.discordUsername, line.nickname) + ':';
+
+  // Confidence indicator (if available)
+  var confEl = null;
+  if (line.confidence != null) {
+    confEl = document.createElement('span');
+    confEl.className = 'line-confidence';
+    var pct = Math.round(line.confidence * 100);
+    confEl.textContent = pct + '%';
+    if (line.confidence >= 0.8) confEl.classList.add('high');
+    else if (line.confidence >= 0.5) confEl.classList.add('med');
+    else confEl.classList.add('low');
+    confEl.title = 'Transcription confidence';
+  }
+
+  const textEl = document.createElement('span');
+  textEl.className = 'line-text';
+  // WHY always contentEditable: if we toggle it on mousedown, the browser's
+  // native drag-to-select breaks because the element type changes mid-drag.
+  // Making it always editable lets the user drag-select immediately.
+  textEl.contentEditable = 'true';
+  textEl.spellcheck = false;
+  textEl.textContent = line.text;
+  textEl.dataset.original = line.text;
+  setupLineEditor(textEl, line.id);
+
+  const actions = document.createElement('div');
+  actions.className = 'line-actions';
+
+  if (line.audioFilenames && line.audioFilenames.length > 0) {
+    const playBtn = document.createElement('button');
+    playBtn.className = 'play-btn';
+    playBtn.textContent = '\u25b6';
+    playBtn.title = 'Play audio (' + line.audioFilenames.length + ' segment' + (line.audioFilenames.length > 1 ? 's' : '') + ')';
+    playBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var speaker = getDisplayName(line.discordUsername, line.nickname);
+      openAudioPlayer(line.audioFilenames, speaker);
+    });
+    actions.appendChild(playBtn);
+  }
+
+  const deleteBtn = document.createElement('button');
+  deleteBtn.className = 'delete-btn';
+  deleteBtn.textContent = '\ud83d\uddd1'; // trashcan
+  deleteBtn.title = 'Delete line';
+  deleteBtn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    if (deleteBtn.classList.contains('confirm')) {
+      deleteLine(line.id, el);
+    } else {
+      deleteBtn.classList.add('confirm');
+      deleteBtn.textContent = '?';
+      // Reset after 3 seconds if not confirmed
+      setTimeout(function() {
+        deleteBtn.classList.remove('confirm');
+        deleteBtn.textContent = '\ud83d\uddd1';
+      }, 3000);
+    }
+  });
+  actions.appendChild(deleteBtn);
+
+  el.appendChild(timeEl);
+  if (confEl) el.appendChild(confEl);
+  el.appendChild(speakerEl);
+  el.appendChild(textEl);
+  el.appendChild(actions);
+
+  linesEl.appendChild(el);
+
+  // Apply confidence filter to new line
+  if (confThreshold < 100 && line.confidence != null) {
+    var pct = Math.round(line.confidence * 100);
+    if (pct > confThreshold) el.classList.add('confidence-hidden');
+  }
+
+  // Apply condensed view to new line
+  if (isCondensed) {
+    var prev = el.previousElementSibling;
+    if (prev && prev.classList.contains('line')
+        && prev.dataset.discordUsername === line.discordUsername
+        && (prev.dataset.nickname || '') === (line.nickname || '')) {
+      el.classList.add('condensed-continuation');
+    }
+  }
+
+  scrollToBottom();
+}
+
+// ---- Line selection + bulk nickname editor ----
+
+var selectedLines = new Set();
+var nicknameEditorEl = document.getElementById('nicknameEditor');
+var isDraggingSpeakers = false;
+var dragStartLine = null;
+
+function getAllLineEls() {
+  return Array.from(linesEl.querySelectorAll('.line'));
+}
+
+function clearSelection() {
+  selectedLines.clear();
+  document.querySelectorAll('.line.selected').forEach(function(el) { el.classList.remove('selected'); });
+  nicknameEditorEl.classList.remove('open');
+}
+
+function selectRange(fromEl, toEl) {
+  var allLines = getAllLineEls();
+  var fromIdx = allLines.indexOf(fromEl);
+  var toIdx = allLines.indexOf(toEl);
+  if (fromIdx === -1 || toIdx === -1) return;
+  // Clear previous and re-select the range
+  document.querySelectorAll('.line.selected').forEach(function(el) { el.classList.remove('selected'); });
+  selectedLines.clear();
+  var start = Math.min(fromIdx, toIdx);
+  var end = Math.max(fromIdx, toIdx);
+  for (var i = start; i <= end; i++) {
+    allLines[i].classList.add('selected');
+    selectedLines.add(allLines[i]);
+  }
+}
+
+// Drag-select: mousedown on a speaker name starts selection, mousemove extends it
+linesEl.addEventListener('mousedown', function(e) {
+  var speaker = e.target.closest('.line-speaker');
+  if (!speaker) return;
+  var lineEl = speaker.closest('.line');
+  if (!lineEl) return;
+
+  e.preventDefault();
+  e.stopPropagation();
+  // Blur any focused contentEditable to prevent it from stealing events
+  if (document.activeElement && document.activeElement.contentEditable === 'true') {
+    document.activeElement.blur();
+  }
+  window.getSelection().removeAllRanges();
+
+  isDraggingSpeakers = true;
+  dragStartLine = lineEl;
+  clearSelection();
+  lineEl.classList.add('selected');
+  selectedLines.add(lineEl);
+});
+
+linesEl.addEventListener('mousemove', function(e) {
+  if (!isDraggingSpeakers || !dragStartLine) return;
+  // Find which line the mouse is over
+  var target = document.elementFromPoint(e.clientX, e.clientY);
+  if (!target) return;
+  var lineEl = target.closest('.line');
+  if (!lineEl || !linesEl.contains(lineEl)) return;
+  selectRange(dragStartLine, lineEl);
+});
+
+document.addEventListener('mouseup', function() {
+  if (isDraggingSpeakers) {
+    isDraggingSpeakers = false;
+    if (selectedLines.size > 0) {
+      showNicknameEditor();
+    }
+  }
+});
+
+// Escape key closes the editor from anywhere
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && nicknameEditorEl.classList.contains('open')) {
+    clearSelection();
+  }
+});
+
+// Close editor when clicking outside (but not on speakers or the editor itself)
+document.addEventListener('mousedown', function(e) {
+  if (nicknameEditorEl.contains(e.target)) return;
+  if (e.target.closest('.line-speaker')) return;
+  if (nicknameEditorEl.classList.contains('open')) {
+    clearSelection();
+  }
+});
+
+function showNicknameEditor() {
+  var users = {};
+  selectedLines.forEach(function(el) {
+    var uid = el.dataset.discordUsername;
+    var nick = el.dataset.nickname;
+    if (uid && !users[uid]) {
+      users[uid] = nick || '';
+    }
+  });
+
+  var userEntries = Object.entries(users);
+  if (userEntries.length === 0) return;
+
+  var html = '<h3>Edit Nicknames (' + selectedLines.size + ' line' + (selectedLines.size > 1 ? 's' : '') + ')</h3>';
+  for (var i = 0; i < userEntries.length; i++) {
+    var uid = userEntries[i][0];
+    var nick = userEntries[i][1];
+    html += '<div class="nickname-editor-row">' +
+      '<span class="ne-username">' + escapeHtml(uid) + '</span>' +
+      '<input type="text" data-uid="' + escapeHtml(uid) + '" value="' + escapeHtml(nick) + '" placeholder="Nickname..." autocomplete="off" data-1p-ignore data-lpignore="true" data-bwignore />' +
+      '</div>';
+  }
+  html += '<div class="nickname-editor-actions">' +
+    '<button class="ne-cancel" onclick="clearSelection()">Cancel</button>' +
+    '<button class="ne-save" id="neSaveBtn">Save</button>' +
+    '</div>';
+
+  nicknameEditorEl.innerHTML = html;
+  nicknameEditorEl.classList.add('open');
+
+  // Auto-focus first input
+  var firstInput = nicknameEditorEl.querySelector('input');
+  if (firstInput) setTimeout(function() { firstInput.focus(); }, 50);
+
+  // Save handler
+  document.getElementById('neSaveBtn').addEventListener('click', saveBulkNicknames);
+
+  // Enter to save, Escape to cancel
+  nicknameEditorEl.querySelectorAll('input').forEach(function(inp) {
+    inp.addEventListener('keydown', function(ev) {
+      if (ev.key === 'Enter') saveBulkNicknames();
+      if (ev.key === 'Escape') clearSelection();
+    });
+  });
+}
+
+async function saveBulkNicknames() {
+  var inputs = nicknameEditorEl.querySelectorAll('input[data-uid]');
+  var nicknames = {};
+  inputs.forEach(function(inp) {
+    var uid = inp.dataset.uid;
+    var val = inp.value.trim() || null;
+    nicknames[uid] = val;
+  });
+
+  // Collect line IDs
+  var lineIds = [];
+  selectedLines.forEach(function(el) {
+    var id = parseInt(el.dataset.id, 10);
+    if (id) lineIds.push(id);
+  });
+
+  try {
+    var res = await fetch('/api/bulk-nickname', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineIds: lineIds, nicknames: nicknames }),
+    });
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    showToast('Nicknames updated (' + lineIds.length + ' lines)');
+    clearSelection();
+  } catch (e) {
+    showToast('Failed to update nicknames: ' + e.message);
+  }
+}
+
+// ---- Search ----
+
+var searchInput = document.getElementById('searchInput');
+var searchCountEl = document.getElementById('searchCount');
+var searchFilterBtn = document.getElementById('searchFilterBtn');
+var searchMatches = [];
+var searchCurrentIdx = -1;
+var searchFilterActive = false;
+
+searchFilterBtn.addEventListener('click', function() {
+  searchFilterActive = !searchFilterActive;
+  searchFilterBtn.classList.toggle('active', searchFilterActive);
+  applySearchFilter();
+});
+
+function applySearchFilter() {
+  if (!searchFilterActive || searchMatches.length === 0) {
+    // Show all lines (remove search-hidden)
+    document.querySelectorAll('.line.search-hidden').forEach(function(el) {
+      el.classList.remove('search-hidden');
+    });
+    return;
+  }
+  // Hide non-matching lines
+  var matchSet = new Set(searchMatches);
+  document.querySelectorAll('.line').forEach(function(el) {
+    if (matchSet.has(el)) {
+      el.classList.remove('search-hidden');
+    } else {
+      el.classList.add('search-hidden');
+    }
+  });
+}
+
+var searchAC = document.getElementById('searchAutocomplete');
+var acItems = [];
+var acSelectedIdx = -1;
+
+searchInput.addEventListener('input', function() {
+  var val = searchInput.value;
+  // Check for @ autocomplete
+  var atMatch = val.match(/^@(\S*)$/);
+  if (atMatch) {
+    showSpeakerAutocomplete(atMatch[1]);
+  } else {
+    hideAutocomplete();
+    doSearch(val.trim());
+  }
+});
+
+searchInput.addEventListener('focus', function() {
+  var val = searchInput.value.trim();
+  if (val.match(/^@\S*$/)) {
+    showSpeakerAutocomplete(val.slice(1));
+  } else if (val) {
+    doSearch(val);
+  }
+});
+
+searchInput.addEventListener('keydown', function(e) {
+  // Autocomplete navigation
+  if (searchAC.classList.contains('open')) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      acSelectedIdx = Math.min(acSelectedIdx + 1, acItems.length - 1);
+      updateACHighlight();
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      acSelectedIdx = Math.max(acSelectedIdx - 1, 0);
+      updateACHighlight();
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      if (acSelectedIdx >= 0 && acSelectedIdx < acItems.length) {
+        selectACItem(acItems[acSelectedIdx]);
+      }
+      return;
+    }
+    if (e.key === 'Escape') {
+      hideAutocomplete();
+      return;
+    }
+    return;
+  }
+
+  // Normal search navigation
+  if (e.key === 'Enter' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (e.shiftKey) navigateSearch(-1);
+    else navigateSearch(1);
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    navigateSearch(-1);
+  }
+  if (e.key === 'Escape') {
+    searchInput.value = '';
+    doSearch('');
+    searchInput.blur();
+  }
+});
+
+function getSpeakersFromLines() {
+  // Collect all unique usernames and all nicknames per username
+  var speakers = {}; // username -> Set of nicknames
+  document.querySelectorAll('.line').forEach(function(el) {
+    var username = el.dataset.discordUsername;
+    var nickname = el.dataset.nickname;
+    if (!username) return;
+    if (!speakers[username]) speakers[username] = new Set();
+    if (nickname) speakers[username].add(nickname);
+  });
+  // Build flat list: one entry per username, plus one entry per nickname
+  var results = [];
+  for (var username in speakers) {
+    var nicks = Array.from(speakers[username]);
+    var nickStr = nicks.join(', ');
+    results.push({ username: username, nicknames: nickStr, searchKey: username });
+    // Also add each nickname as a separate searchable entry
+    for (var i = 0; i < nicks.length; i++) {
+      results.push({ username: username, nicknames: nickStr, searchKey: nicks[i], isNick: true });
+    }
+  }
+  return results;
+}
+
+function showSpeakerAutocomplete(partial) {
+  var speakers = getSpeakersFromLines();
+  var lower = partial.toLowerCase();
+
+  // Filter and deduplicate
+  var seen = {};
+  var filtered = [];
+  for (var i = 0; i < speakers.length; i++) {
+    var s = speakers[i];
+    if (partial && !s.searchKey.toLowerCase().includes(lower)) continue;
+    // Deduplicate by username -- show each user once but match on any name
+    if (!seen[s.username]) {
+      seen[s.username] = true;
+      filtered.push(s);
+    }
+  }
+
+  if (filtered.length === 0) {
+    hideAutocomplete();
+    return;
+  }
+
+  acItems = filtered.map(function(s) { return [s.username, s.nicknames]; });
+  acSelectedIdx = 0;
+  searchAC.innerHTML = '';
+  for (var i = 0; i < filtered.length; i++) {
+    var s = filtered[i];
+    var item = document.createElement('div');
+    item.className = 'search-ac-item' + (i === 0 ? ' active' : '');
+    var dot = '<span class="ac-color" style="background:' + getSpeakerColor(s.username) + '"></span>';
+    var label = escapeHtml(s.username);
+    if (s.nicknames) label += ' <span class="ac-nick">(' + escapeHtml(s.nicknames) + ')</span>';
+    item.innerHTML = dot + label;
+    (function(idx) {
+      item.addEventListener('mousedown', function(e) {
+        e.preventDefault();
+        selectACItem(acItems[idx]);
+      });
+    })(i);
+    searchAC.appendChild(item);
+  }
+  searchAC.classList.add('open');
+}
+
+function updateACHighlight() {
+  var items = searchAC.querySelectorAll('.search-ac-item');
+  items.forEach(function(el, i) {
+    el.classList.toggle('active', i === acSelectedIdx);
+  });
+  if (items[acSelectedIdx]) items[acSelectedIdx].scrollIntoView({ block: 'nearest' });
+}
+
+function selectACItem(entry) {
+  var username = entry[0];
+  searchInput.value = '@' + username + ' ';
+  hideAutocomplete();
+  doSearch(searchInput.value.trim());
+  searchInput.focus();
+}
+
+function hideAutocomplete() {
+  searchAC.classList.remove('open');
+  acItems = [];
+  acSelectedIdx = -1;
+}
+
+// Close autocomplete when clicking outside
+document.addEventListener('mousedown', function(e) {
+  if (!searchAC.contains(e.target) && e.target !== searchInput) {
+    hideAutocomplete();
+  }
+});
+
+function doSearch(query) {
+  // Clear previous highlights
+  document.querySelectorAll('.line.search-match, .line.search-highlight').forEach(function(el) {
+    el.classList.remove('search-match', 'search-highlight');
+  });
+  // Remove mark tags
+  document.querySelectorAll('.line-text mark').forEach(function(m) {
+    var parent = m.parentNode;
+    parent.replaceChild(document.createTextNode(m.textContent), m);
+    parent.normalize();
+  });
+
+  searchMatches = [];
+  searchCurrentIdx = -1;
+
+  if (!query) {
+    searchCountEl.textContent = '';
+    applySearchFilter();
+    return;
+  }
+
+  // Check for @username prefix
+  var speakerFilter = null;
+  var textQuery = query;
+  var atPrefixMatch = query.match(/^@(\S+)\s*(.*)?$/);
+  if (atPrefixMatch) {
+    speakerFilter = atPrefixMatch[1].toLowerCase();
+    textQuery = (atPrefixMatch[2] || '').trim();
+  }
+
+  // Detect regex: /pattern/ or /pattern/flags
+  var isRegex = false;
+  var searchRegex = null;
+  var regexMatch = textQuery.match(/^\/(.+)\/([gimsuy]*)$/);
+  if (textQuery && regexMatch) {
+    try {
+      var flags = regexMatch[2] || '';
+      if (!flags.includes('i')) flags += 'i';
+      if (!flags.includes('g')) flags += 'g';
+      searchRegex = new RegExp(regexMatch[1], flags);
+      isRegex = true;
+    } catch (e) {
+      searchCountEl.textContent = 'Invalid regex';
+      return;
+    }
+  } else if (textQuery) {
+    searchRegex = new RegExp('(' + escapeRegex(textQuery) + ')', 'gi');
+  }
+
+  document.querySelectorAll('.line').forEach(function(el) {
+    var textEl = el.querySelector('.line-text');
+    if (!textEl) return;
+    var text = textEl.textContent || '';
+    var username = (el.dataset.discordUsername || '').toLowerCase();
+    var nickname = (el.dataset.nickname || '').toLowerCase();
+
+    // Speaker filter: must match username or nickname
+    if (speakerFilter) {
+      if (!username.includes(speakerFilter) && !nickname.includes(speakerFilter)) return;
+    }
+
+    // Text match: search in both text content and speaker names
+    var matched = false;
+    if (searchRegex) {
+      searchRegex.lastIndex = 0;
+      if (searchRegex.test(text)) {
+        matched = true;
+      } else {
+        // Also search speaker name for non-@ queries
+        if (!speakerFilter) {
+          searchRegex.lastIndex = 0;
+          var speakerText = el.dataset.discordUsername + ' ' + (el.dataset.nickname || '');
+          if (searchRegex.test(speakerText)) matched = true;
+        }
+      }
+    } else if (speakerFilter && !textQuery) {
+      // @username with no text query -- match all lines from that speaker
+      matched = true;
+    }
+
+    if (matched) {
+      el.classList.add('search-match');
+      searchMatches.push(el);
+      // Highlight matching text (only in the text content, not speaker name)
+      if (searchRegex) {
+        var node = textEl.firstChild;
+        if (node && node.nodeType === Node.TEXT_NODE) {
+          searchRegex.lastIndex = 0;
+          var highlightRegex = isRegex ? new RegExp('(' + regexMatch[1] + ')', searchRegex.flags) : searchRegex;
+          var html = escapeHtml(text).replace(highlightRegex, '<mark>$1</mark>');
+          textEl.innerHTML = html;
+        }
+      }
+    }
+  });
+
+  searchCountEl.textContent = searchMatches.length + ' match' + (searchMatches.length !== 1 ? 'es' : '');
+  applySearchFilter();
+  if (searchMatches.length > 0) navigateSearch(0);
+}
+
+function navigateSearch(dir) {
+  if (searchMatches.length === 0) return;
+  if (searchCurrentIdx >= 0) searchMatches[searchCurrentIdx].classList.remove('search-highlight');
+  if (dir === 0) searchCurrentIdx = 0;
+  else searchCurrentIdx = (searchCurrentIdx + dir + searchMatches.length) % searchMatches.length;
+  searchMatches[searchCurrentIdx].classList.add('search-highlight');
+  searchMatches[searchCurrentIdx].scrollIntoView({ block: 'center', behavior: 'instant' });
+  searchCountEl.textContent = (searchCurrentIdx + 1) + '/' + searchMatches.length;
+}
+
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// ---- Undo ----
+
+var undoStack = {}; // keyed by line ID
+
+function pushUndo(lineId, text) {
+  if (!undoStack[lineId]) undoStack[lineId] = [];
+  undoStack[lineId].push(text);
+  // Keep max 10 entries per line
+  if (undoStack[lineId].length > 10) undoStack[lineId].shift();
+}
+
+function popUndo(lineId) {
+  if (!undoStack[lineId] || undoStack[lineId].length === 0) return null;
+  return undoStack[lineId].pop();
+}
+
+// ---- Keyboard shortcuts ----
+
+document.addEventListener('keydown', function(e) {
+  // Don't intercept when typing in an input/contenteditable
+  var tag = e.target.tagName;
+  var isEditing = e.target.contentEditable === 'true' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+
+  // Ctrl+Z for undo on focused line-text
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z' && e.target.classList && e.target.classList.contains('line-text')) {
+    e.preventDefault();
+    var lineEl = e.target.closest('.line');
+    var lineId = lineEl ? parseInt(lineEl.dataset.id, 10) : null;
+    if (lineId) {
+      var prev = popUndo(lineId);
+      if (prev != null) {
+        e.target.textContent = prev;
+        e.target.dataset.original = prev;
+        submitEdit(lineId, prev);
+      }
+    }
+    return;
+  }
+
+  if (isEditing) return;
+
+  // PageUp/PageDown: scroll transcript
+  if (e.key === 'PageDown') {
+    e.preventDefault();
+    linesEl.scrollBy({ top: linesEl.clientHeight * 0.8, behavior: 'smooth' });
+    return;
+  }
+  if (e.key === 'PageUp') {
+    e.preventDefault();
+    linesEl.scrollBy({ top: -linesEl.clientHeight * 0.8, behavior: 'smooth' });
+    return;
+  }
+
+  // Home/End: jump to top/bottom of transcript
+  if (e.key === 'Home') {
+    e.preventDefault();
+    linesEl.scrollTo({ top: 0, behavior: 'smooth' });
+    return;
+  }
+  if (e.key === 'End') {
+    e.preventDefault();
+    linesEl.scrollTo({ top: linesEl.scrollHeight, behavior: 'smooth' });
+    return;
+  }
+
+  // Space: toggle play/pause on audio player
+  if (e.key === ' ' && apBar.classList.contains('active')) {
+    e.preventDefault();
+    apPlayBtn.click();
+  }
+
+  // Ctrl+F or /: focus search
+  if ((e.ctrlKey && e.key === 'f') || (e.key === '/' && !isEditing)) {
+    e.preventDefault();
+    searchInput.focus();
+    searchInput.select();
+  }
+
+  // Ctrl+G / Ctrl+Shift+G: navigate search results (F3 conflicts with Chrome)
+  if ((e.ctrlKey || e.metaKey) && e.key === 'g') {
+    e.preventDefault();
+    if (e.shiftKey) navigateSearch(-1);
+    else navigateSearch(1);
+  }
+
+  // 1/2/3: name mode toggle
+  if (e.key === '1') { nameMode = 'nickname'; nameToggleBtn.textContent = 'Nickname'; updateAllNames(); }
+  if (e.key === '2') { nameMode = 'discord'; nameToggleBtn.textContent = 'Discord'; updateAllNames(); }
+  if (e.key === '3') { nameMode = 'both'; nameToggleBtn.textContent = 'Both'; updateAllNames(); }
+});
+
+function updateAllNames() {
+  document.querySelectorAll('.line-speaker').forEach(function(el) {
+    var line = el.closest('.line');
+    if (line) {
+      el.textContent = getDisplayName(line.dataset.discordUsername, line.dataset.nickname) + ':';
+    }
+  });
+}
+
+// ---- Audio player bar ----
+
+var apBar = document.getElementById('audioPlayerBar');
+var apPlayBtn = document.getElementById('apPlayBtn');
+var apSpeaker = document.getElementById('apSpeaker');
+var apTime = document.getElementById('apTime');
+var apScrub = document.getElementById('apScrub');
+var apClose = document.getElementById('apClose');
+var apWaveformWrap = document.getElementById('apWaveformWrap');
+var apWaveformCanvas = document.getElementById('apWaveform');
+var apWaveformProgress = document.getElementById('apWaveformProgress');
+var apWaveformCtx = apWaveformCanvas.getContext('2d');
+
+// Audio player state
+var apSegments = [];      // array of {url, duration, startOffset}
+var apTotalDuration = 0;
+var apCurrentIdx = 0;
+var apPlaying = false;
+var apGapMs = 400;        // ms gap between segments
+
+function formatDuration(sec) {
+  var m = Math.floor(sec / 60);
+  var s = Math.floor(sec % 60);
+  return m + ':' + (s < 10 ? '0' : '') + s;
+}
+
+// Decode audio and render waveform to canvas
+async function renderWaveform(filenames) {
+  var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  var allSamples = [];
+
+  for (var i = 0; i < filenames.length; i++) {
+    try {
+      var response = await fetch('/recordings/raw/' + encodeURIComponent(filenames[i]));
+      var arrayBuf = await response.arrayBuffer();
+      var decoded = await audioCtx.decodeAudioData(arrayBuf);
+      var channelData = decoded.getChannelData(0);
+      allSamples.push(channelData);
+      // Add gap samples (400ms of silence)
+      if (i < filenames.length - 1) {
+        var gapSamples = new Float32Array(Math.floor(decoded.sampleRate * 0.4));
+        allSamples.push(gapSamples);
+      }
+    } catch (e) {
+      // Skip broken files
+    }
+  }
+  audioCtx.close();
+
+  if (allSamples.length === 0) return;
+
+  // Combine all samples
+  var totalLen = 0;
+  for (var j = 0; j < allSamples.length; j++) totalLen += allSamples[j].length;
+  var combined = new Float32Array(totalLen);
+  var offset = 0;
+  for (var j = 0; j < allSamples.length; j++) {
+    combined.set(allSamples[j], offset);
+    offset += allSamples[j].length;
+  }
+
+  // Draw waveform
+  var canvas = apWaveformCanvas;
+  var dpr = window.devicePixelRatio || 1;
+  var w = apWaveformWrap.clientWidth;
+  var h = apWaveformWrap.clientHeight;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  var ctx = apWaveformCtx;
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  var barsCount = Math.floor(w / 3); // 3px per bar
+  var samplesPerBar = Math.floor(combined.length / barsCount);
+  var mid = h / 2;
+
+  ctx.fillStyle = '#555';
+  for (var b = 0; b < barsCount; b++) {
+    var start = b * samplesPerBar;
+    var end = start + samplesPerBar;
+    var max = 0;
+    for (var s = start; s < end && s < combined.length; s++) {
+      var abs = Math.abs(combined[s]);
+      if (abs > max) max = abs;
+    }
+    var barH = Math.max(1, max * mid * 0.9);
+    ctx.fillRect(b * 3, mid - barH, 2, barH * 2);
+  }
+}
+
+// Click on waveform to seek
+apWaveformWrap.addEventListener('click', function(e) {
+  if (!apTotalDuration) return;
+  var rect = apWaveformWrap.getBoundingClientRect();
+  var pct = (e.clientX - rect.left) / rect.width;
+  pct = Math.max(0, Math.min(1, pct));
+  apScrub.value = pct * 100;
+  apScrub.dispatchEvent(new Event('input'));
+});
+
+function openAudioPlayer(filenames, speaker) {
+  // Stop any current playback
+  closeAudioPlayer();
+
+  apSpeaker.textContent = speaker;
+  apSpeaker.style.color = getSpeakerColor(speaker) || '#e94560';
+  apBar.classList.add('active');
+  apPlayBtn.innerHTML = '&#9654;';
+  apTime.textContent = 'Loading...';
+  apScrub.value = 0;
+  apWaveformProgress.style.width = '0%';
+  // Clear canvas
+  apWaveformCtx.clearRect(0, 0, apWaveformCanvas.width, apWaveformCanvas.height);
+
+  // Load all segments to get durations
+  var loaded = 0;
+  apSegments = [];
+  var offset = 0;
+
+  for (var i = 0; i < filenames.length; i++) {
+    (function(idx) {
+      var audio = new Audio('/recordings/raw/' + encodeURIComponent(filenames[idx]));
+      apSegments[idx] = { audio: audio, url: filenames[idx], duration: 0, startOffset: 0 };
+
+      audio.addEventListener('loadedmetadata', function() {
+        apSegments[idx].duration = audio.duration;
+        loaded++;
+        if (loaded === filenames.length) {
+          // All loaded -- compute offsets
+          var off = 0;
+          for (var j = 0; j < apSegments.length; j++) {
+            apSegments[j].startOffset = off;
+            off += apSegments[j].duration;
+            if (j < apSegments.length - 1) off += apGapMs / 1000;
+          }
+          apTotalDuration = off;
+          apTime.textContent = '0:00 / ' + formatDuration(apTotalDuration);
+          // Render waveform then auto-play
+          renderWaveform(filenames).then(function() { startPlayback(); });
+        }
+      });
+      audio.addEventListener('error', function() {
+        loaded++;
+        // Continue even if one fails
+      });
+      audio.load();
+    })(i);
+  }
+}
+
+function startPlayback() {
+  if (apSegments.length === 0) return;
+  apPlaying = true;
+  apPlayBtn.innerHTML = '&#9646;&#9646;';
+  apCurrentIdx = 0;
+  playSegment(0);
+}
+
+function playSegment(idx, seekTime) {
+  if (idx >= apSegments.length || !apPlaying) {
+    stopPlayback();
+    return;
+  }
+  apCurrentIdx = idx;
+  var seg = apSegments[idx];
+  if (!seg.audio || !seg.duration) {
+    playSegment(idx + 1);
+    return;
+  }
+
+  // Clear previous listeners
+  seg.audio.onended = null;
+  seg.audio.ontimeupdate = null;
+
+  seg.audio.currentTime = (seekTime != null) ? seekTime : 0;
+  seg.audio.play().catch(function() {});
+
+  var advanced = false;
+  function advanceToNext() {
+    if (advanced) return;
+    advanced = true;
+    seg.audio.pause();
+    seg.audio.ontimeupdate = null;
+    seg.audio.onended = null;
+    if (!apPlaying) return;
+    if (idx + 1 < apSegments.length) {
+      setTimeout(function() { playSegment(idx + 1); }, apGapMs);
+    } else {
+      stopPlayback();
+    }
+  }
+
+  // WHY both onended AND ontimeupdate: some browsers don't fire 'ended'
+  // reliably on raw PCM WAV files. The timeupdate fallback catches it.
+  seg.audio.onended = advanceToNext;
+  seg.audio.ontimeupdate = function() {
+    if (seg.audio.currentTime >= seg.audio.duration - 0.05) {
+      advanceToNext();
+    }
+  };
+}
+
+function stopPlayback() {
+  apPlaying = false;
+  apPlayBtn.innerHTML = '&#9654;';
+  for (var i = 0; i < apSegments.length; i++) {
+    if (apSegments[i].audio) apSegments[i].audio.pause();
+  }
+}
+
+function closeAudioPlayer() {
+  stopPlayback();
+  for (var i = 0; i < apSegments.length; i++) {
+    if (apSegments[i] && apSegments[i].audio) {
+      apSegments[i].audio.pause();
+      apSegments[i].audio.src = '';
+    }
+  }
+  apSegments = [];
+  apTotalDuration = 0;
+  apBar.classList.remove('active');
+}
+
+// Update scrub bar position
+setInterval(function() {
+  if (!apPlaying || apSegments.length === 0 || !apTotalDuration) return;
+  var seg = apSegments[apCurrentIdx];
+  if (!seg || !seg.audio) return;
+  var currentGlobal = seg.startOffset + seg.audio.currentTime;
+  var pct = (currentGlobal / apTotalDuration) * 100;
+  apScrub.value = pct;
+  apWaveformProgress.style.width = pct + '%';
+  apTime.textContent = formatDuration(currentGlobal) + ' / ' + formatDuration(apTotalDuration);
+}, 200);
+
+apPlayBtn.addEventListener('click', function() {
+  if (apPlaying) {
+    stopPlayback();
+  } else if (apSegments.length > 0) {
+    apPlaying = true;
+    apPlayBtn.innerHTML = '&#9646;&#9646;';
+    // Resume current segment with proper end detection
+    playSegment(apCurrentIdx);
+  }
+});
+
+apScrub.addEventListener('input', function() {
+  if (!apTotalDuration) return;
+  var targetTime = (apScrub.value / 100) * apTotalDuration;
+  // Find which segment this falls in
+  for (var i = 0; i < apSegments.length; i++) {
+    var seg = apSegments[i];
+    var segEnd = seg.startOffset + seg.duration;
+    if (targetTime <= segEnd || i === apSegments.length - 1) {
+      // Stop current playback
+      for (var j = 0; j < apSegments.length; j++) {
+        if (apSegments[j].audio) apSegments[j].audio.pause();
+      }
+      // Stop all segments then seek into the right one
+      for (var j = 0; j < apSegments.length; j++) {
+        apSegments[j].audio.pause();
+        apSegments[j].audio.ontimeupdate = null;
+        apSegments[j].audio.onended = null;
+      }
+      var seekPos = Math.max(0, targetTime - seg.startOffset);
+      apCurrentIdx = i;
+      if (apPlaying) {
+        playSegment(i, seekPos);
+      } else {
+        seg.audio.currentTime = seekPos;
+      }
+      break;
+    }
+  }
+});
+
+apClose.addEventListener('click', closeAudioPlayer);
+
+// Expand a selection range to full word boundaries within a text node.
+// Returns null if expansion isn't possible.
+function getExpandedWordRange(s) {
+  if (!s || s.isCollapsed || !s.rangeCount) return null;
+  const r = s.getRangeAt(0);
+  const textNode = r.startContainer;
+  if (!textNode || textNode.nodeType !== Node.TEXT_NODE) return null;
+  if (r.endContainer !== textNode) return null;
+  const text = textNode.textContent || '';
+  let start = r.startOffset;
+  let end = r.endOffset;
+  while (start > 0 && text[start - 1] !== ' ') start--;
+  while (end < text.length && text[end] !== ' ') end++;
+  if (start === r.startOffset && end === r.endOffset) return null; // already aligned
+  const newRange = document.createRange();
+  newRange.setStart(textNode, start);
+  newRange.setEnd(textNode, end);
+  return newRange;
+}
+
+// Live word-snap during drag: shows a highlight overlay over the expanded
+// word range while dragging, then sets the real selection on mouseup.
+// WHY overlay instead of modifying selection: the browser continuously updates
+// the selection during drag. If we modify it in selectionchange, the browser
+// fights us and the highlight flickers. The overlay is purely visual and
+// doesn't conflict with the browser's drag behavior.
+(function() {
+  var dragging = false;
+  var dragTarget = null;
+  var highlightEl = null;
+
+  function removeHighlight() {
+    if (highlightEl) {
+      highlightEl.remove();
+      highlightEl = null;
+    }
+  }
+
+  function showHighlight(range, container) {
+    removeHighlight();
+    var rects = range.getClientRects();
+    if (!rects.length) return;
+    // Create a highlight covering all rects (may span multiple lines)
+    var containerRect = container.getBoundingClientRect();
+    for (var i = 0; i < rects.length; i++) {
+      var rect = rects[i];
+      var hl = document.createElement('div');
+      hl.className = 'word-highlight';
+      hl.style.left = (rect.left) + 'px';
+      hl.style.top = (rect.top) + 'px';
+      hl.style.width = rect.width + 'px';
+      hl.style.height = rect.height + 'px';
+      hl.style.position = 'fixed';
+      document.body.appendChild(hl);
+      if (i === 0) highlightEl = hl;
+      else hl.dataset.wordHighlight = 'extra';
+    }
+  }
+
+  function removeAllHighlights() {
+    removeHighlight();
+    document.querySelectorAll('[data-word-highlight="extra"]').forEach(function(el) { el.remove(); });
+  }
+
+  document.addEventListener('mousedown', function(e) {
+    var el = e.target.closest('.line-text');
+    if (el) {
+      dragging = true;
+      dragTarget = el;
+    }
+  });
+
+  document.addEventListener('selectionchange', function() {
+    if (!dragging) return;
+    var s = window.getSelection();
+    if (!s || s.isCollapsed || !s.rangeCount) {
+      removeAllHighlights();
+      return;
+    }
+    var r = s.getRangeAt(0);
+    if (!dragTarget || !dragTarget.contains(r.startContainer)) return;
+    var expanded = getExpandedWordRange(s);
+    if (expanded) {
+      showHighlight(expanded, dragTarget);
+    }
+  });
+
+  document.addEventListener('mouseup', function() {
+    if (!dragging) return;
+    removeAllHighlights();
+    // Apply the word-expanded selection for real on mouseup
+    var s = window.getSelection();
+    if (s && !s.isCollapsed && s.rangeCount) {
+      var expanded = getExpandedWordRange(s);
+      if (expanded) {
+        s.removeAllRanges();
+        s.addRange(expanded);
+      }
+    }
+    dragging = false;
+    dragTarget = null;
+  });
+})();
+
+// Set up Enter/Escape/blur handling on always-editable line-text spans.
+function setupLineEditor(textEl, lineId) {
+  textEl.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const newText = textEl.textContent.trim();
+      const original = textEl.dataset.original;
+      if (newText && newText !== original) {
+        pushUndo(lineId, original);
+        submitEdit(lineId, newText);
+        textEl.dataset.original = newText;
+      }
+      window.getSelection().removeAllRanges();
+      textEl.blur();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      textEl.textContent = textEl.dataset.original;
+      window.getSelection().removeAllRanges();
+      textEl.blur();
+    }
+  });
+
+  textEl.addEventListener('blur', function() {
+    const newText = textEl.textContent.trim();
+    const original = textEl.dataset.original;
+    if (newText && newText !== original) {
+      pushUndo(lineId, original);
+      submitEdit(lineId, newText);
+      textEl.dataset.original = newText;
+    }
+  });
+}
+
+async function deleteLine(lineId, lineEl) {
+  try {
+    const res = await fetch('/api/lines/' + lineId, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    lineEl.remove();
+  } catch (e) {
+    showToast('Delete failed: ' + e.message);
+  }
+}
+
+async function submitEdit(lineId, newText) {
+  try {
+    const res = await fetch('/api/lines/' + lineId, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: newText }),
+    });
+    const data = await res.json();
+    if (data.autoAdded && data.autoAdded.length > 0) {
+      showToast('Auto-added hotword: ' + data.autoAdded.join(', '));
+    }
+  } catch (e) {
+    showToast('Edit failed: ' + e.message);
+  }
+}
+
+function updateLineText(lineId, newText, audioFilenames) {
+  const el = linesEl.querySelector('.line[data-id="' + lineId + '"]');
+  if (!el) return;
+  const textEl = el.querySelector('.line-text');
+  if (textEl && document.activeElement !== textEl) {
+    textEl.textContent = newText;
+    textEl.dataset.original = newText;
+  }
+  // Update audio state if filenames changed (from merge)
+  if (audioFilenames && audioFilenames.length > 0 && !el.classList.contains('has-audio')) {
+    el.classList.add('has-audio');
+    // Add play button if it doesn't exist
+    var actions = el.querySelector('.line-actions');
+    if (actions && !actions.querySelector('.play-btn')) {
+      var playBtn = document.createElement('button');
+      playBtn.className = 'play-btn';
+      playBtn.textContent = '\u25b6';
+      playBtn.title = 'Play audio';
+      playBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var speaker = getDisplayName(el.dataset.discordUsername, el.dataset.nickname);
+        openAudioPlayer(audioFilenames, speaker);
+      });
+      actions.insertBefore(playBtn, actions.firstChild);
+    }
+  }
+}
+
+function clearLines() {
+  linesEl.innerHTML = '';
+  emptyState.style.display = 'block';
+  linesEl.appendChild(emptyState);
+}
+
+// ---- Hotwords ----
+
+function renderHotwords(words) {
+  hotwordsList.innerHTML = '';
+  for (const word of words) {
+    const item = document.createElement('div');
+    item.className = 'hotword-item';
+
+    const label = document.createElement('span');
+    label.textContent = word;
+    label.addEventListener('click', function() {
+      // Replace label with edit input
+      const input = document.createElement('input');
+      input.className = 'hotword-edit-input';
+      input.type = 'text';
+      input.value = word;
+      input.autocomplete = 'off';
+      input.setAttribute('data-1p-ignore', '');
+      input.setAttribute('data-lpignore', 'true');
+      input.setAttribute('data-bwignore', '');
+      item.replaceChild(input, label);
+      input.focus();
+      input.select();
+
+      function finishEdit(save) {
+        if (save) {
+          const newWord = input.value.trim();
+          if (newWord && newWord !== word) {
+            editHotwordUI(word, newWord);
+          } else {
+            item.replaceChild(label, input);
+          }
+        } else {
+          item.replaceChild(label, input);
+        }
+      }
+
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') finishEdit(true);
+        if (e.key === 'Escape') finishEdit(false);
+      });
+      input.addEventListener('blur', function() { finishEdit(true); });
+    });
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'hotword-remove';
+    removeBtn.textContent = '\u00d7';
+    removeBtn.addEventListener('click', function() { removeHotwordUI(word); });
+    item.appendChild(label);
+    item.appendChild(removeBtn);
+    hotwordsList.appendChild(item);
+  }
+}
+
+async function addHotwordUI() {
+  const word = hotwordInput.value.trim();
+  if (!word) return;
+  hotwordInput.value = '';
+  try {
+    await fetch('/api/hotwords', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ word: word }),
+    });
+  } catch (e) {
+    showToast('Failed to add hotword: ' + e.message);
+  }
+}
+
+async function editHotwordUI(oldWord, newWord) {
+  try {
+    await fetch('/api/hotwords', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oldWord: oldWord, newWord: newWord }),
+    });
+  } catch (e) {
+    showToast('Failed to edit hotword: ' + e.message);
+  }
+}
+
+async function removeHotwordUI(word) {
+  try {
+    await fetch('/api/hotwords', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ word: word }),
+    });
+  } catch (e) {
+    showToast('Failed to remove hotword: ' + e.message);
+  }
+}
+
+hotwordAddBtn.addEventListener('click', addHotwordUI);
+hotwordInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') addHotwordUI(); });
+
+// ---- Delete session ----
+
+var deleteSessionBtn = document.getElementById('deleteSessionBtn');
+var deleteSessionTimeout = null;
+
+deleteSessionBtn.addEventListener('click', async function() {
+  var sid = sessionSelect.value;
+  if (!sid) return;
+
+  if (deleteSessionBtn.classList.contains('confirm')) {
+    clearTimeout(deleteSessionTimeout);
+    deleteSessionBtn.classList.remove('confirm');
+    deleteSessionBtn.innerHTML = '&#128465;';
+    try {
+      var res = await fetch('/api/sessions/' + sid, { method: 'DELETE' });
+      var data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      showToast('Session deleted');
+      currentSessionId = null;
+      clearLines();
+    } catch (e) {
+      showToast('Delete failed: ' + e.message);
+    }
+  } else {
+    deleteSessionBtn.classList.add('confirm');
+    deleteSessionBtn.textContent = '?';
+    deleteSessionTimeout = setTimeout(function() {
+      deleteSessionBtn.classList.remove('confirm');
+      deleteSessionBtn.innerHTML = '&#128465;';
+    }, 3000);
+  }
+});
+
+// ---- Merge sessions modal ----
+
+var mergeModal = document.getElementById('mergeModal');
+var mergeModalClose = document.getElementById('mergeModalClose');
+var mergeSessionList = document.getElementById('mergeSessionList');
+var addMergeSession = document.getElementById('addMergeSession');
+var mergePreview = document.getElementById('mergePreview');
+var mergeNameInput = document.getElementById('mergeNameInput');
+var mergeConfirmBtn = document.getElementById('mergeConfirmBtn');
+var mergeSessionBtn = document.getElementById('mergeSessionBtn');
+var allSessions = [];
+var dragSrcEl = null;
+
+mergeSessionBtn.addEventListener('click', function() {
+  openMergeModal();
+});
+
+mergeModalClose.addEventListener('click', function() {
+  mergeModal.classList.remove('open');
+});
+
+mergeModal.addEventListener('click', function(e) {
+  if (e.target === mergeModal) mergeModal.classList.remove('open');
+});
+
+function openMergeModal() {
+  mergeModal.classList.add('open');
+  mergeSessionList.innerHTML = '';
+  // Pre-populate with 2 empty dropdowns
+  addMergeSessionRow();
+  addMergeSessionRow();
+  // Set default name
+  var now = new Date();
+  var pad = function(n) { return n.toString().padStart(2, '0'); };
+  mergeNameInput.value = 'Merged ' + now.getFullYear() + '-' + pad(now.getMonth()+1) + '-' + pad(now.getDate()) + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes());
+  updateMergePreview();
+}
+
+function addMergeSessionRow(preselect) {
+  var item = document.createElement('div');
+  item.className = 'merge-session-item';
+  item.draggable = true;
+
+  var handle = document.createElement('span');
+  handle.className = 'drag-handle';
+  handle.textContent = '\u2630';
+
+  var sel = document.createElement('select');
+  sel.innerHTML = '<option value="">Select session...</option>';
+  for (var i = 0; i < allSessions.length; i++) {
+    var s = allSessions[i];
+    var opt = document.createElement('option');
+    opt.value = s.id;
+    var d = new Date(s.startedAt);
+    opt.textContent = (s.channelName || 'Session') + ' - ' + d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+    sel.appendChild(opt);
+  }
+  if (preselect) sel.value = preselect;
+  sel.addEventListener('change', function() { updateMergePreview(); });
+
+  var removeBtn = document.createElement('button');
+  removeBtn.className = 'remove-merge-btn';
+  removeBtn.textContent = '\u00d7';
+  removeBtn.addEventListener('click', function() {
+    if (mergeSessionList.children.length > 2) {
+      item.remove();
+      updateMergePreview();
+    }
+  });
+
+  // Drag and drop
+  item.addEventListener('dragstart', function(e) {
+    dragSrcEl = item;
+    e.dataTransfer.effectAllowed = 'move';
+    item.style.opacity = '0.4';
+  });
+  item.addEventListener('dragend', function() {
+    item.style.opacity = '1';
+    dragSrcEl = null;
+    // Remove any drag-over styling
+    var items = mergeSessionList.querySelectorAll('.merge-session-item');
+    for (var j = 0; j < items.length; j++) items[j].style.borderTop = '';
+  });
+  item.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    item.style.borderTop = '2px solid #e94560';
+  });
+  item.addEventListener('dragleave', function() {
+    item.style.borderTop = '';
+  });
+  item.addEventListener('drop', function(e) {
+    e.preventDefault();
+    item.style.borderTop = '';
+    if (dragSrcEl && dragSrcEl !== item) {
+      mergeSessionList.insertBefore(dragSrcEl, item);
+      updateMergePreview();
+    }
+  });
+
+  item.appendChild(handle);
+  item.appendChild(sel);
+  item.appendChild(removeBtn);
+  mergeSessionList.appendChild(item);
+}
+
+addMergeSession.addEventListener('click', function() {
+  addMergeSessionRow();
+});
+
+function previewLineHtml(l) {
+  var time = formatTime(l.createdAt || l.timestamp || '');
+  var name = escapeHtml(l.nickname || l.discordUsername);
+  var text = escapeHtml(l.spokenText);
+  return '<div class="preview-line"><span class="pv-time">' + time + '</span><span class="pv-speaker">' + name + ':</span> ' + text + '</div>';
+}
+
+async function updateMergePreview() {
+  var items = mergeSessionList.querySelectorAll('.merge-session-item select');
+  var selectedIds = [];
+  for (var i = 0; i < items.length; i++) {
+    var v = parseInt(items[i].value, 10);
+    if (v) selectedIds.push(v);
+  }
+
+  mergeConfirmBtn.disabled = selectedIds.length < 2;
+
+  if (selectedIds.length === 0) {
+    mergePreview.innerHTML = '<div style="color:#555;text-align:center;padding:20px;">Select sessions to see preview</div>';
+    return;
+  }
+
+  mergePreview.innerHTML = '<div style="color:#555;text-align:center;padding:10px;">Loading...</div>';
+
+  try {
+    var html = '';
+    for (var j = 0; j < selectedIds.length; j++) {
+      var sid = selectedIds[j];
+      var res = await fetch('/api/sessions/' + sid + '/preview');
+      var preview = await res.json();
+
+      // Find session name
+      var sessionName = 'Session ' + sid;
+      for (var k = 0; k < allSessions.length; k++) {
+        if (allSessions[k].id === sid) {
+          sessionName = allSessions[k].channelName || sessionName;
+          break;
+        }
+      }
+
+      if (j > 0) {
+        html += '<div class="preview-separator">--- merge point ---</div>';
+      }
+
+      // Show last lines of this session (except for last session) and first lines (except for first session)
+      if (j === 0) {
+        // First session: show last few lines
+        for (var m = 0; m < preview.last.length; m++) {
+          var l = preview.last[m];
+          html += previewLineHtml(l);
+        }
+        if (preview.first.length > 0 && preview.last.length > 0 && preview.first[0].id !== preview.last[0].id) {
+          html = '<div class="preview-dots">...</div>' + html;
+        }
+      } else if (j === selectedIds.length - 1) {
+        // Last session: show first few lines
+        for (var m = 0; m < preview.first.length; m++) {
+          var l = preview.first[m];
+          html += previewLineHtml(l);
+        }
+        if (preview.first.length > 0 && preview.last.length > 0 && preview.first[preview.first.length-1].id !== preview.last[preview.last.length-1].id) {
+          html += '<div class="preview-dots">...</div>';
+        }
+      } else {
+        // Middle session: show first and last
+        for (var m = 0; m < preview.first.length; m++) {
+          var l = preview.first[m];
+          html += previewLineHtml(l);
+        }
+        if (preview.first.length > 0 && preview.last.length > 0 && preview.first[preview.first.length-1].id !== preview.last[0].id) {
+          html += '<div class="preview-dots">...</div>';
+          for (var m = 0; m < preview.last.length; m++) {
+            var l = preview.last[m];
+            html += previewLineHtml(l);
+          }
+        }
+      }
+    }
+
+    mergePreview.innerHTML = html || '<div style="color:#555;text-align:center;padding:20px;">Selected sessions have no transcriptions</div>';
+  } catch (e) {
+    mergePreview.innerHTML = '<div style="color:#e94560;padding:10px;">Error loading preview: ' + e.message + '</div>';
+  }
+}
+
+mergeConfirmBtn.addEventListener('click', async function() {
+  var items = mergeSessionList.querySelectorAll('.merge-session-item select');
+  var selectedIds = [];
+  for (var i = 0; i < items.length; i++) {
+    var v = parseInt(items[i].value, 10);
+    if (v) selectedIds.push(v);
+  }
+  var name = mergeNameInput.value.trim();
+  if (selectedIds.length < 2 || !name) return;
+
+  mergeConfirmBtn.disabled = true;
+  mergeConfirmBtn.textContent = 'Merging...';
+
+  try {
+    var res = await fetch('/api/sessions/merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionIds: selectedIds, name: name }),
+    });
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    mergeModal.classList.remove('open');
+    showToast('Sessions merged');
+    currentSessionId = data.newSessionId;
+    // Sessions list will update via WS broadcast
+  } catch (e) {
+    showToast('Merge failed: ' + e.message);
+  } finally {
+    mergeConfirmBtn.disabled = false;
+    mergeConfirmBtn.textContent = 'Merge';
+  }
+});
+
+// ---- WebSocket ----
+
+function connect() {
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host);
+
+  ws.onopen = function() {
+    statusDot.classList.add('connected');
+    statusText.textContent = 'Connected';
+  };
+
+  ws.onclose = function() {
+    statusDot.classList.remove('connected');
+    statusText.textContent = 'Disconnected';
+    setTimeout(connect, 2000);
+  };
+
+  ws.onerror = function() { ws.close(); };
+
+  ws.onmessage = function(event) {
+    var msg = JSON.parse(event.data);
+
+    switch (msg.type) {
+      case 'init':
+        renderSessions(msg.sessions);
+        clearLines();
+        for (var i = 0; i < msg.lines.length; i++) addLine(msg.lines[i]);
+        applyCondensedView();
+        renderHotwords(msg.hotwords);
+        updateStatus(msg.status);
+        renderMembers(msg.members);
+        updateSaveRecordings(msg.saveRecordings);
+        renderIgnoredUsers(msg.ignoredUsers);
+        break;
+
+      case 'line':
+        addLine(msg.data);
+        break;
+
+      case 'edit':
+        updateLineText(msg.data.id, msg.data.text, msg.data.audioFilenames);
+        if (msg.data.autoAdded && msg.data.autoAdded.length > 0) {
+          showToast('Auto-added hotword: ' + msg.data.autoAdded.join(', '));
+        }
+        break;
+
+      case 'hotwords':
+        renderHotwords(msg.data);
+        break;
+
+      case 'status':
+        updateStatus(msg.data);
+        break;
+
+      case 'members':
+        renderMembers(msg.data);
+        break;
+
+      case 'session_started':
+        // Add new session to picker and switch to it
+        var opt = document.createElement('option');
+        opt.value = msg.data.id;
+        opt.textContent = (msg.data.channelName || 'Session') + ' - ' + new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) + ' (active)';
+        sessionSelect.insertBefore(opt, sessionSelect.firstChild);
+        currentSessionId = msg.data.id;
+        sessionSelect.value = msg.data.id;
+        clearLines();
+        break;
+
+      case 'delete':
+        var delEl = linesEl.querySelector('.line[data-id="' + msg.data.id + '"]');
+        if (delEl) delEl.remove();
+        break;
+
+      case 'sessions':
+        renderSessions(msg.data);
+        break;
+
+      case 'reload_lines':
+        clearLines();
+        for (var rl = 0; rl < msg.data.length; rl++) addLine(msg.data[rl]);
+        applyCondensedView();
+        break;
+
+      case 'save_recordings':
+        updateSaveRecordings(msg.data);
+        break;
+
+      case 'ignored_users':
+        renderIgnoredUsers(msg.data);
+        break;
+
+      case 'finalized':
+        showToast('Transcription finalized and saved.');
+        break;
+    }
+  };
+}
+
+connect();
+</script>
+</body>
+</html>

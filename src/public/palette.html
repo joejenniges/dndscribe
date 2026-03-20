@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Name Palette</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #141414;
+    color: #e0e0e0;
+    padding: 12px;
+    min-height: 100vh;
+  }
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .header h1 { font-size: 18px; color: #e94560; }
+  .header .user-info { font-size: 15px; color: #888; }
+  .status { font-size: 12px; color: #555; margin-bottom: 4px; }
+  .status.connected { color: #4caf50; }
+  .current-name { font-size: 16px; color: #aaa; margin-bottom: 8px; }
+  .current-name strong { color: #4caf50; }
+
+  .shortcuts { font-size: 10px; color: #444; margin-bottom: 8px; }
+  .shortcuts kbd {
+    background: #2a2a2a; border: 1px solid #333; border-radius: 2px;
+    padding: 0 3px; font-family: inherit; color: #888;
+  }
+  @media (pointer: coarse) { .shortcuts { display: none; } }
+
+  .key-mode { font-size: 13px; color: #e94560; margin-bottom: 8px; display: none; font-weight: 600; }
+  .key-mode.active { display: block; }
+
+  .search-wrap { display: none; margin-bottom: 8px; }
+  .search-wrap.open { display: block; }
+  .search-wrap input {
+    width: 100%; background: #1c1c1c; border: 2px solid #e94560; color: #e0e0e0;
+    padding: 10px 14px; border-radius: 8px; font-size: 16px; outline: none;
+  }
+
+  /* Category sections */
+  .category-section { margin-bottom: 12px; }
+  .category-header {
+    display: flex; align-items: center; gap: 8px; padding: 4px 0; margin-bottom: 6px;
+    border-bottom: 1px dashed #333; cursor: pointer; user-select: none;
+  }
+  .category-header .cat-name { font-size: 13px; font-weight: 600; color: #888; flex: 1; }
+  .category-header .cat-key {
+    font-size: 10px; background: #2a2a2a; border: 1px solid #333; border-radius: 2px;
+    padding: 0 4px; color: #888;
+  }
+  .category-header.focused { border-bottom-color: #e94560; }
+  .category-header.focused .cat-name { color: #e94560; }
+
+  .preset-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px;
+  }
+  .preset-btn {
+    padding: 14px 16px; border-radius: 8px; cursor: pointer; font-size: 16px;
+    font-weight: 600; border: 2px solid #333; background: #2a2a2a; color: #e0e0e0;
+    transition: background 0.1s, transform 0.1s; user-select: none; text-align: center;
+    min-height: 48px; -webkit-tap-highlight-color: rgba(233, 69, 96, 0.3);
+  }
+  .preset-btn:hover { background: #333; }
+  .preset-btn:active { transform: scale(0.96); }
+  .preset-btn .key-hint {
+    font-size: 10px; color: #555; margin-left: 4px; vertical-align: super;
+  }
+  @media (pointer: coarse) { .preset-btn .key-hint { display: none; } }
+  .preset-btn.active { border-color: #4caf50; background: #1a3a1a; color: #4caf50; }
+  .preset-btn.focused { outline: 2px solid #e94560; outline-offset: 1px; }
+  .preset-btn.hidden { display: none; }
+  .preset-btn.clear-btn { background: #1c1c1c; color: #888; border-style: dashed; }
+  .preset-btn.clear-btn:hover { color: #e0e0e0; }
+  .preset-btn.clear-btn.active { border-color: #4caf50; color: #4caf50; }
+  .preset-btn.add-btn { background: #1c1c1c; color: #555; border-style: dashed; font-size: 20px; }
+  .preset-btn.add-btn:hover { color: #e0e0e0; }
+
+  .action-bar {
+    display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap;
+  }
+  .action-btn {
+    padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    border: 1px solid #333; background: #2a2a2a; color: #e0e0e0;
+  }
+  .action-btn:hover { background: #333; }
+
+  .inline-input {
+    background: #141414; border: 2px solid #e94560; color: #e0e0e0;
+    padding: 12px 14px; border-radius: 8px; font-size: 16px; font-weight: 600;
+    width: 100%; outline: none;
+  }
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    20%, 60% { transform: translateX(-4px); }
+    40%, 80% { transform: translateX(4px); }
+  }
+  .inline-input.shake { animation: shake 0.3s ease; border-color: #ff4444; }
+
+  .context-menu {
+    display: none; position: fixed; background: #1c1c1c; border: 1px solid #333;
+    border-radius: 4px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.5); min-width: 140px;
+  }
+  .context-menu.open { display: block; }
+  .context-menu-item { padding: 6px 12px; cursor: pointer; font-size: 13px; }
+  .context-menu-item:hover { background: #2a2a2a; }
+  .context-menu-item.danger { color: #e94560; }
+  .context-menu-sub { position: relative; }
+  .context-menu-sub::after { content: ' \25b6'; font-size: 10px; float: right; margin-left: 8px; }
+  .submenu {
+    display: none; position: absolute; left: 100%; top: 0; background: #1c1c1c;
+    border: 1px solid #333; border-radius: 4px; min-width: 120px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  }
+  .context-menu-sub:hover .submenu { display: block; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Name Palette</h1>
+  <span class="user-info" id="userInfo"></span>
+</div>
+<div class="status" id="status">Disconnected</div>
+<div class="current-name" id="currentName"></div>
+<div class="shortcuts">
+  <kbd>/</kbd> search
+  <kbd>C</kbd> clear
+  <kbd>D</kbd> DM
+  <kbd>1-9</kbd> category, then item
+  <kbd>Esc</kbd> cancel
+  <kbd>N</kbd> new name
+  <kbd>E</kbd> edit
+  <kbd>Del</kbd> delete
+  <kbd>Ctrl+&uarr;&darr;</kbd> reorder
+</div>
+<div class="key-mode" id="keyMode"></div>
+<div class="search-wrap" id="searchWrap">
+  <input type="text" id="searchInput" placeholder="Search names..." autocomplete="off" />
+</div>
+<div id="content"></div>
+<div class="action-bar">
+  <button class="action-btn" id="addCategoryBtn">+ Category</button>
+  <button class="action-btn" id="addPresetBtn">+ Name</button>
+</div>
+<div class="context-menu" id="contextMenu"></div>
+
+<script>
+var params = new URLSearchParams(window.location.search);
+var targetUserId = params.get('userId');
+var targetUsername = params.get('username') || targetUserId || 'Unknown';
+
+document.getElementById('userInfo').textContent = targetUsername;
+document.title = 'Name Palette - ' + targetUsername;
+
+var ws = null;
+var statusEl = document.getElementById('status');
+var currentNameEl = document.getElementById('currentName');
+var contentEl = document.getElementById('content');
+var contextMenu = document.getElementById('contextMenu');
+var searchWrap = document.getElementById('searchWrap');
+var searchInput = document.getElementById('searchInput');
+var keyModeEl = document.getElementById('keyMode');
+var presets = [];
+var categories = [];
+var currentNickname = null;
+var searchMode = false;
+
+// Two-level key nav: null = no category selected, number = category index
+var selectedCatIdx = null;
+var focusedItemIdx = -1;
+
+function connect() {
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host);
+  ws.onopen = function() { statusEl.textContent = 'Connected'; statusEl.className = 'status connected'; };
+  ws.onclose = function() { statusEl.textContent = 'Disconnected'; statusEl.className = 'status'; setTimeout(connect, 2000); };
+  ws.onerror = function() { ws.close(); };
+  ws.onmessage = function(event) {
+    var msg = JSON.parse(event.data);
+    if (msg.type === 'init') {
+      presets = (msg.presets || []).filter(function(p) { return p.discordUserId === targetUserId; });
+      categories = (msg.categories || []).filter(function(c) { return c.discordUserId === targetUserId; });
+      var members = msg.members || [];
+      for (var i = 0; i < members.length; i++) {
+        if (members[i].id === targetUserId) { currentNickname = members[i].characterName || null; break; }
+      }
+      render();
+    }
+    if (msg.type === 'presets_updated') {
+      presets = (msg.presets || []).filter(function(p) { return p.discordUserId === targetUserId; });
+      categories = (msg.categories || []).filter(function(c) { return c.discordUserId === targetUserId; });
+      render();
+    }
+    if (msg.type === 'members') {
+      var members = msg.data || [];
+      for (var i = 0; i < members.length; i++) {
+        if (members[i].id === targetUserId) { currentNickname = members[i].characterName || null; render(); break; }
+      }
+    }
+  };
+}
+
+function fuzzyMatch(query, text) {
+  var q = query.toLowerCase(), t = text.toLowerCase(), qi = 0;
+  for (var ti = 0; ti < t.length && qi < q.length; ti++) { if (t[ti] === q[qi]) qi++; }
+  return qi === q.length;
+}
+
+// Get categorized structure: [{catId, catName, presets: [...]}]
+function getCategorizedPresets() {
+  var query = searchMode ? searchInput.value.trim() : '';
+  var filtered = query ? presets.filter(function(p) { return fuzzyMatch(query, p.label); }) : presets;
+
+  var groups = [];
+  // Default (uncategorized) group first
+  var defaultPresets = filtered.filter(function(p) { return !p.categoryId; });
+  groups.push({ catId: null, catName: 'Default', presets: defaultPresets });
+
+  // Then each category
+  for (var i = 0; i < categories.length; i++) {
+    var cat = categories[i];
+    var catPresets = filtered.filter(function(p) { return p.categoryId === cat.id; });
+    groups.push({ catId: cat.id, catName: cat.name, presets: catPresets });
+  }
+
+  return groups;
+}
+
+function render() {
+  currentNameEl.innerHTML = currentNickname
+    ? 'Current: <strong>' + escapeHtml(currentNickname) + '</strong>'
+    : 'Current: <em style="color:#555">none</em>';
+
+  contentEl.innerHTML = '';
+  var groups = getCategorizedPresets();
+
+  for (var gi = 0; gi < groups.length; gi++) {
+    var g = groups[gi];
+    var section = document.createElement('div');
+    section.className = 'category-section';
+
+    // Category header
+    var header = document.createElement('div');
+    header.className = 'category-header';
+    if (selectedCatIdx === gi) header.classList.add('focused');
+    var catName = document.createElement('span');
+    catName.className = 'cat-name';
+    catName.textContent = g.catName;
+    var catKey = document.createElement('span');
+    catKey.className = 'cat-key';
+    catKey.textContent = (gi + 1).toString();
+    header.appendChild(catKey);
+    header.appendChild(catName);
+
+    // Right-click on category header (not default)
+    if (g.catId !== null) {
+      (function(cat, gIdx) {
+        header.addEventListener('contextmenu', function(e) {
+          e.preventDefault();
+          showCategoryContextMenu(e, cat);
+        });
+      })(categories[gi - 1], gi);
+    }
+
+    section.appendChild(header);
+
+    // Preset grid
+    var grid = document.createElement('div');
+    grid.className = 'preset-grid';
+
+    // Clear button in default category only
+    if (gi === 0 && !searchMode) {
+      var clearBtn = document.createElement('button');
+      clearBtn.className = 'preset-btn clear-btn';
+      if (!currentNickname) clearBtn.classList.add('active');
+      clearBtn.textContent = 'Clear';
+      clearBtn.addEventListener('click', function() { setNickname(null); });
+      grid.appendChild(clearBtn);
+    }
+
+    for (var pi = 0; pi < g.presets.length; pi++) {
+      var p = g.presets[pi];
+      var btn = document.createElement('button');
+      btn.className = 'preset-btn';
+      if (currentNickname === p.label) btn.classList.add('active');
+      if (selectedCatIdx === gi && focusedItemIdx === pi) btn.classList.add('focused');
+      btn.textContent = p.label;
+
+      // Show item number hint when category is selected
+      if (selectedCatIdx === gi && pi < 9) {
+        var hint = document.createElement('span');
+        hint.className = 'key-hint';
+        hint.textContent = (pi + 1).toString();
+        btn.appendChild(hint);
+      } else if (selectedCatIdx === null && !searchMode) {
+        // No per-item hints when no category selected
+      }
+
+      (function(preset) {
+        btn.addEventListener('click', function() { setNickname(preset.label); });
+        btn.addEventListener('contextmenu', function(e) {
+          e.preventDefault();
+          showPresetContextMenu(e, preset);
+        });
+      })(p);
+      grid.appendChild(btn);
+    }
+
+    section.appendChild(grid);
+    contentEl.appendChild(section);
+  }
+}
+
+function updateKeyMode() {
+  if (selectedCatIdx !== null) {
+    var groups = getCategorizedPresets();
+    var catName = groups[selectedCatIdx] ? groups[selectedCatIdx].catName : '';
+    keyModeEl.textContent = 'Category: ' + catName + ' -- press 1-9 for item, Esc to cancel';
+    keyModeEl.classList.add('active');
+  } else {
+    keyModeEl.classList.remove('active');
+  }
+}
+
+async function swapPresetsInCategory(catIdx, idxA, idxB) {
+  var g = getCategorizedPresets()[catIdx];
+  if (!g) return;
+  var a = g.presets[idxA];
+  var b = g.presets[idxB];
+  // Swap in the main presets array
+  var ai = presets.indexOf(a);
+  var bi = presets.indexOf(b);
+  if (ai >= 0 && bi >= 0) {
+    presets[ai] = b;
+    presets[bi] = a;
+  }
+  try {
+    await fetch('/api/presets/' + a.id, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({label:a.label,position:idxB}) });
+    await fetch('/api/presets/' + b.id, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({label:b.label,position:idxA}) });
+  } catch(e) { console.error('Failed to save order:', e); }
+}
+
+async function setNickname(name) {
+  try {
+    await fetch('/api/character-name', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: targetUserId, name: name }),
+    });
+    currentNickname = name;
+    selectedCatIdx = null;
+    focusedItemIdx = -1;
+    updateKeyMode();
+    if (searchMode) closeSearch();
+    render();
+  } catch (e) { console.error('Failed:', e); }
+}
+
+async function setDM() {
+  var hasDM = presets.some(function(p) { return p.label === 'DM'; });
+  if (!hasDM) {
+    try {
+      var res = await fetch('/api/presets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: targetUserId, label: 'DM', position: presets.length }),
+      });
+      var data = await res.json();
+      presets.push({ id: data.id, discordUserId: targetUserId, label: 'DM', position: presets.length, categoryId: null });
+    } catch (e) { console.error('Failed:', e); }
+  }
+  setNickname('DM');
+}
+
+// ---- Search ----
+function openSearch() {
+  searchMode = true; searchWrap.classList.add('open'); searchInput.value = '';
+  selectedCatIdx = null; focusedItemIdx = -1; updateKeyMode(); render(); searchInput.focus();
+}
+function closeSearch() {
+  searchMode = false; searchWrap.classList.remove('open'); searchInput.value = '';
+  selectedCatIdx = null; focusedItemIdx = -1; updateKeyMode(); render();
+}
+searchInput.addEventListener('input', function() { render(); });
+searchInput.addEventListener('keydown', function(e) {
+  var visible = [];
+  getCategorizedPresets().forEach(function(g) { visible = visible.concat(g.presets); });
+  if (e.key === 'ArrowDown') { e.preventDefault(); focusedItemIdx = Math.min(focusedItemIdx + 1, visible.length - 1); render(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); focusedItemIdx = Math.max(focusedItemIdx - 1, 0); render(); }
+  else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (focusedItemIdx >= 0 && focusedItemIdx < visible.length) setNickname(visible[focusedItemIdx].label);
+  }
+  else if (e.key === 'Escape') { e.preventDefault(); closeSearch(); }
+});
+
+// ---- Keyboard shortcuts ----
+document.addEventListener('keydown', function(e) {
+  if (e.target.tagName === 'INPUT') return;
+
+  if (e.key === '/') { e.preventDefault(); openSearch(); return; }
+  if (e.key === 'Escape') {
+    if (selectedCatIdx !== null) { selectedCatIdx = null; focusedItemIdx = -1; updateKeyMode(); render(); return; }
+    return;
+  }
+  if (e.key === 'c' || e.key === 'C') { setNickname(null); return; }
+  if (e.key === 'd' || e.key === 'D') { setDM(); return; }
+  if (e.key === 'n' || e.key === 'N') { e.preventDefault(); addPresetUI(); return; }
+  if (e.key === 'e' || e.key === 'E') {
+    e.preventDefault();
+    if (selectedCatIdx !== null && focusedItemIdx >= 0) {
+      var g = getCategorizedPresets()[selectedCatIdx];
+      if (g && focusedItemIdx < g.presets.length) editPresetInline(g.presets[focusedItemIdx]);
+    }
+    return;
+  }
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (selectedCatIdx !== null && focusedItemIdx >= 0) {
+      e.preventDefault();
+      var g = getCategorizedPresets()[selectedCatIdx];
+      if (g && focusedItemIdx < g.presets.length) deletePreset(g.presets[focusedItemIdx]);
+    }
+    return;
+  }
+
+  // Arrow navigation within selected category
+  if (selectedCatIdx !== null) {
+    var catPresets = (getCategorizedPresets()[selectedCatIdx] || {}).presets || [];
+    if ((e.ctrlKey || e.metaKey) && e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (focusedItemIdx >= 0 && focusedItemIdx < catPresets.length - 1) {
+        swapPresetsInCategory(selectedCatIdx, focusedItemIdx, focusedItemIdx + 1);
+        focusedItemIdx++;
+        render();
+      }
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (focusedItemIdx > 0) {
+        swapPresetsInCategory(selectedCatIdx, focusedItemIdx, focusedItemIdx - 1);
+        focusedItemIdx--;
+        render();
+      }
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      focusedItemIdx = Math.min(focusedItemIdx + 1, catPresets.length - 1);
+      render();
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      focusedItemIdx = Math.max(focusedItemIdx - 1, 0);
+      render();
+      return;
+    }
+    if (e.key === 'Enter' && focusedItemIdx >= 0 && focusedItemIdx < catPresets.length) {
+      e.preventDefault();
+      setNickname(catPresets[focusedItemIdx].label);
+      return;
+    }
+  }
+
+  if (e.key >= '1' && e.key <= '9') {
+    var num = parseInt(e.key, 10) - 1;
+    var groups = getCategorizedPresets();
+
+    if (selectedCatIdx === null) {
+      if (num < groups.length) {
+        selectedCatIdx = num;
+        focusedItemIdx = 0;
+        updateKeyMode();
+        render();
+      }
+    } else {
+      var catPresets2 = groups[selectedCatIdx] ? groups[selectedCatIdx].presets : [];
+      if (num < catPresets2.length) {
+        setNickname(catPresets2[num].label);
+      }
+    }
+    return;
+  }
+});
+
+// ---- Add preset/category ----
+document.getElementById('addPresetBtn').addEventListener('click', addPresetUI);
+document.getElementById('addCategoryBtn').addEventListener('click', addCategoryUI);
+
+function addPresetUI() {
+  var input = document.createElement('input');
+  input.className = 'inline-input';
+  input.type = 'text';
+  input.placeholder = 'New name...';
+  input.autocomplete = 'off';
+  contentEl.appendChild(input);
+  input.focus();
+  var saved = false;
+  function isDup(label) { return presets.some(function(p) { return p.label.toLowerCase() === label.toLowerCase(); }); }
+  async function save() {
+    if (saved) return;
+    var label = input.value.trim();
+    if (label && isDup(label)) { input.classList.remove('shake'); void input.offsetWidth; input.classList.add('shake'); return; }
+    saved = true;
+    if (label) {
+      try {
+        var res = await fetch('/api/presets', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({userId:targetUserId,label:label,position:presets.length}) });
+        var data = await res.json();
+        presets.push({id:data.id,discordUserId:targetUserId,label:label,position:presets.length,categoryId:null});
+      } catch(e) { console.error(e); }
+    }
+    render();
+  }
+  input.addEventListener('keydown', function(e) { if(e.key==='Enter')save(); if(e.key==='Escape'){saved=true;render();} });
+  input.addEventListener('blur', function() { save(); });
+}
+
+function addCategoryUI() {
+  var input = document.createElement('input');
+  input.className = 'inline-input';
+  input.type = 'text';
+  input.placeholder = 'Category name...';
+  input.autocomplete = 'off';
+  contentEl.appendChild(input);
+  input.focus();
+  var saved = false;
+  async function save() {
+    if (saved) return; saved = true;
+    var name = input.value.trim();
+    if (name) {
+      try {
+        var res = await fetch('/api/categories', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({userId:targetUserId,name:name,position:categories.length}) });
+        var data = await res.json();
+        categories.push({id:data.id,discordUserId:targetUserId,name:name,position:categories.length});
+      } catch(e) { console.error(e); }
+    }
+    render();
+  }
+  input.addEventListener('keydown', function(e) { if(e.key==='Enter')save(); if(e.key==='Escape'){saved=true;render();} });
+  input.addEventListener('blur', function() { save(); });
+}
+
+// ---- Context menus ----
+function showPresetContextMenu(e, preset) {
+  contextMenu.innerHTML = '';
+
+  var editItem = document.createElement('div');
+  editItem.className = 'context-menu-item';
+  editItem.textContent = 'Edit';
+  editItem.addEventListener('click', function() { hideContextMenu(); editPresetInline(preset); });
+  contextMenu.appendChild(editItem);
+
+  // Move to category submenu
+  var moveItem = document.createElement('div');
+  moveItem.className = 'context-menu-item context-menu-sub';
+  moveItem.textContent = 'Move to';
+  var submenu = document.createElement('div');
+  submenu.className = 'submenu';
+
+  // Default option
+  var defOpt = document.createElement('div');
+  defOpt.className = 'context-menu-item';
+  defOpt.textContent = 'Default';
+  if (!preset.categoryId) defOpt.style.color = '#4caf50';
+  defOpt.addEventListener('click', function() { hideContextMenu(); movePreset(preset, null); });
+  submenu.appendChild(defOpt);
+
+  for (var i = 0; i < categories.length; i++) {
+    (function(cat) {
+      var opt = document.createElement('div');
+      opt.className = 'context-menu-item';
+      opt.textContent = cat.name;
+      if (preset.categoryId === cat.id) opt.style.color = '#4caf50';
+      opt.addEventListener('click', function() { hideContextMenu(); movePreset(preset, cat.id); });
+      submenu.appendChild(opt);
+    })(categories[i]);
+  }
+  moveItem.appendChild(submenu);
+  contextMenu.appendChild(moveItem);
+
+  var deleteItem = document.createElement('div');
+  deleteItem.className = 'context-menu-item danger';
+  deleteItem.textContent = 'Delete';
+  deleteItem.addEventListener('click', function() { hideContextMenu(); deletePreset(preset); });
+  contextMenu.appendChild(deleteItem);
+
+  contextMenu.style.left = e.clientX + 'px';
+  contextMenu.style.top = e.clientY + 'px';
+  contextMenu.classList.add('open');
+}
+
+function showCategoryContextMenu(e, cat) {
+  contextMenu.innerHTML = '';
+
+  var editItem = document.createElement('div');
+  editItem.className = 'context-menu-item';
+  editItem.textContent = 'Edit';
+  editItem.addEventListener('click', function() { hideContextMenu(); editCategoryInline(cat); });
+  contextMenu.appendChild(editItem);
+
+  var deleteItem = document.createElement('div');
+  deleteItem.className = 'context-menu-item danger';
+  deleteItem.textContent = 'Delete (moves items to Default)';
+  deleteItem.addEventListener('click', function() { hideContextMenu(); deleteCategoryUI(cat); });
+  contextMenu.appendChild(deleteItem);
+
+  contextMenu.style.left = e.clientX + 'px';
+  contextMenu.style.top = e.clientY + 'px';
+  contextMenu.classList.add('open');
+}
+
+function hideContextMenu() { contextMenu.classList.remove('open'); }
+document.addEventListener('click', hideContextMenu);
+
+async function movePreset(preset, categoryId) {
+  try {
+    await fetch('/api/presets/move', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({presetId:preset.id,categoryId:categoryId}) });
+    preset.categoryId = categoryId;
+    render();
+  } catch(e) { console.error(e); }
+}
+
+function editPresetInline(preset) {
+  render();
+  var btns = contentEl.querySelectorAll('.preset-btn');
+  for (var i = 0; i < btns.length; i++) {
+    if (btns[i].textContent.replace(/\d$/, '') === preset.label || btns[i].textContent === preset.label) {
+      var input = document.createElement('input');
+      input.className = 'inline-input';
+      input.value = preset.label;
+      input.autocomplete = 'off';
+      btns[i].replaceWith(input);
+      input.focus(); input.select();
+      var saved = false;
+      function isDup(label) { return presets.some(function(p) { return p.id!==preset.id && p.label.toLowerCase()===label.toLowerCase(); }); }
+      async function save() {
+        if(saved)return;
+        var nl = input.value.trim();
+        if(nl && isDup(nl)){input.classList.remove('shake');void input.offsetWidth;input.classList.add('shake');return;}
+        saved=true;
+        if(nl && nl!==preset.label){
+          try{await fetch('/api/presets/'+preset.id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:nl})});preset.label=nl;}catch(e){console.error(e);}
+        }
+        render();
+      }
+      input.addEventListener('keydown',function(e){if(e.key==='Enter')save();if(e.key==='Escape'){saved=true;render();}});
+      input.addEventListener('blur',function(){save();});
+      break;
+    }
+  }
+}
+
+function editCategoryInline(cat) {
+  render();
+  var headers = contentEl.querySelectorAll('.category-header');
+  for (var i = 0; i < headers.length; i++) {
+    var nameEl = headers[i].querySelector('.cat-name');
+    if (nameEl && nameEl.textContent === cat.name) {
+      var input = document.createElement('input');
+      input.className = 'inline-input';
+      input.style.width = '200px';
+      input.value = cat.name;
+      input.autocomplete = 'off';
+      nameEl.replaceWith(input);
+      input.focus(); input.select();
+      var saved = false;
+      async function save() {
+        if(saved)return; saved=true;
+        var nn = input.value.trim();
+        if(nn && nn!==cat.name){
+          try{await fetch('/api/categories/'+cat.id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nn})});cat.name=nn;}catch(e){console.error(e);}
+        }
+        render();
+      }
+      input.addEventListener('keydown',function(e){if(e.key==='Enter')save();if(e.key==='Escape'){saved=true;render();}});
+      input.addEventListener('blur',function(){save();});
+      break;
+    }
+  }
+}
+
+async function deletePreset(preset) {
+  try { await fetch('/api/presets/'+preset.id,{method:'DELETE'}); presets=presets.filter(function(p){return p.id!==preset.id;}); render(); } catch(e){console.error(e);}
+}
+
+async function deleteCategoryUI(cat) {
+  try {
+    await fetch('/api/categories/'+cat.id,{method:'DELETE'});
+    // Move presets back to uncategorized locally
+    presets.forEach(function(p){if(p.categoryId===cat.id)p.categoryId=null;});
+    categories=categories.filter(function(c){return c.id!==cat.id;});
+    render();
+  } catch(e){console.error(e);}
+}
+
+function escapeHtml(s) { var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+
+connect();
+</script>
+</body>
+</html>
