@@ -1,10 +1,20 @@
-node_modules/
-dist/
-.env
-recordings/
-logs/
-models/
-ignored.txt
+# Build output
+/bin/
+*.exe
+*.dll
+
+# Downloaded ASR models (large; fetched via download-model.ps1)
+/models/
+
+# Whisper model cache (downloaded at runtime into recordings/models)
+/recordings/
+
+# Runtime
+/logs/
+config.yaml
 hotwords.txt
-character-names.json
-.venv/
+
+# Frontend build + deps
+/web/build/
+/web/node_modules/
+/web/.svelte-kit/

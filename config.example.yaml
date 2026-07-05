@@ -1,0 +1,45 @@
+discord:
+  token: ""
+  guild_id: ""
+
+database:
+  url: "postgresql://dev:dev@localhost:5432/dndscribe"
+
+web:
+  port: 3001
+
+transcribe:
+  engine: "whisper"    # whisper (batch, default) | sherpa (streaming, low-latency)
+  model: "base"        # whisper model name
+  threads: 4           # whisper CPU threads
+
+  # Streaming engine (sherpa-onnx). Only used when engine: "sherpa".
+  # Download a model first: ./download-model.ps1
+  sherpa:
+    model_dir: "models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17"
+    variant: "int8"            # int8 (smaller/faster, default) | fp32
+    # model_type: ""           # leave empty for auto-detect; do NOT hardcode zipformer2
+    provider: "cpu"
+    num_threads: 2
+    decoding_method: "greedy_search"   # or modified_beam_search
+    enable_endpoint: true              # commit finals on trailing silence
+    rule1_min_trailing_silence: 2.4
+    rule2_min_trailing_silence: 1.2
+    rule3_min_utterance_length: 30     # hard backstop; sentence break is primary
+    soft_cap_seconds: 12               # past this, a long turn breaks at the next sentence
+    # Punctuation + truecasing of committed lines (raw ASR is ALL-CAPS, no punct).
+    # Live partials stay lowercased-raw for speed; finals are punctuated/cased.
+    punctuation:
+      enabled: true
+      model_dir: "models/sherpa-onnx-online-punct-en-2024-08-06"
+      # cnn_bilstm: "models/.../model.int8.onnx"   # explicit override
+      # bpe_vocab:  "models/.../bpe.vocab"
+    # Or set explicit ASR paths instead of model_dir/variant:
+    # encoder: "models/.../encoder-...onnx"
+    # decoder: "models/.../decoder-...onnx"
+    # joiner:  "models/.../joiner-...onnx"
+    # tokens:  "models/.../tokens.txt"
+
+recordings:
+  dir: "recordings"
+  save_raw: false
