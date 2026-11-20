@@ -37,6 +37,8 @@ type BotController interface {
 	UnignoreUser(campaignID int64, userID string) (bool, error)
 	GetNicknamePresets(campaignID int64, userID *string) ([]db.NicknamePreset, error)
 	GetActiveCampaignID() *int64
+	JoinMusic(channelID string) (string, error)
+	LeaveMusic()
 }
 
 // TranscriptionWorker manages live transcription state. The web layer uses it
@@ -58,8 +60,13 @@ type TranscriptionWorker interface {
 // --- Types ---
 
 type BotStatus struct {
-	Recording   bool    `json:"recording"`
+	Recording bool `json:"recording"`
+	// Paused: recording, but transcription is paused.
+	Paused bool `json:"paused"`
+	// MusicOnly: in a voice channel for the DJ, not recording.
+	MusicOnly   bool    `json:"musicOnly"`
 	ChannelName *string `json:"channelName"`
+	ChannelID   *string `json:"channelId"`
 	CampaignID  *int64  `json:"campaignId"`
 }
 
@@ -146,6 +153,8 @@ var (
 	reLeave              = regexp.MustCompile(`^/api/leave$`)
 	rePause              = regexp.MustCompile(`^/api/pause$`)
 	reSaveRecordings     = regexp.MustCompile(`^/api/save-recordings$`)
+	reMusicJoin          = regexp.MustCompile(`^/api/music/join$`)
+	reMusicLeave         = regexp.MustCompile(`^/api/music/leave$`)
 )
 
 // --- API Handler ---
@@ -190,6 +199,15 @@ func (a *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if rePause.MatchString(path) && method == http.MethodPost {
 		a.postPause(w, r)
+		return
+	}
+	if reMusicJoin.MatchString(path) && method == http.MethodPost {
+		a.postMusicJoin(w, r)
+		return
+	}
+	if reMusicLeave.MatchString(path) && method == http.MethodPost {
+		a.ctrl.LeaveMusic()
+		jsonResponse(w, http.StatusOK, map[string]bool{"success": true})
 		return
 	}
 	if reSaveRecordings.MatchString(path) {
@@ -468,6 +486,22 @@ func (a *APIHandler) postLeave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"channelName": channelName})
+}
+
+func (a *APIHandler) postMusicJoin(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ChannelID string `json:"channelId"`
+	}
+	if err := readJSON(r, &body); err != nil || body.ChannelID == "" {
+		jsonError(w, http.StatusBadRequest, "channelId is required")
+		return
+	}
+	name, err := a.ctrl.JoinMusic(body.ChannelID)
+	if err != nil {
+		jsonError(w, http.StatusConflict, err.Error())
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]string{"channelName": name})
 }
 
 func (a *APIHandler) postPause(w http.ResponseWriter, _ *http.Request) {

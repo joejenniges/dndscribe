@@ -174,6 +174,13 @@ export const voice = {
     request<{ paused: boolean }>('/api/pause', { method: 'POST' }),
 };
 
+/** Join a voice channel for DJ playback only, without recording. */
+export const music = {
+  join: (channelId: string) =>
+    request<{ channelName: string }>('/api/music/join', { method: 'POST', body: JSON.stringify({ channelId }) }),
+  leave: () => request<{ success: boolean }>('/api/music/leave', { method: 'POST' }),
+};
+
 export const saveRecordings = {
   get: () => request<{ enabled: boolean }>('/api/save-recordings'),
   set: (enabled: boolean) =>

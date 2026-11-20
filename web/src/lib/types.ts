@@ -56,7 +56,12 @@ export interface VoiceMember {
 
 export interface BotStatus {
   recording: boolean;
+  /** Recording, but transcription is paused. */
+  paused?: boolean;
+  /** In a voice channel for the DJ only, not recording. */
+  musicOnly?: boolean;
   channelName: string | null;
+  channelId?: string | null;
   campaignId: number | null;
 }
 

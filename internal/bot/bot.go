@@ -42,6 +42,12 @@ type Bot struct {
 	voiceState   *VoiceState
 	voiceStateMu sync.Mutex
 
+	// Music-only voice connection: the bot is in a channel for the DJ but not
+	// recording. Guarded by voiceStateMu. At most one of voiceState and music
+	// is set; starting a recording in the same channel takes over this
+	// connection instead of reconnecting, so music keeps playing.
+	music *musicVoice
+
 	// Save recordings preference (persists across sessions).
 	saveRecordings bool
 
@@ -63,6 +69,12 @@ type VoiceState struct {
 	ChannelID  string
 	CampaignID int64
 	SessionID  int64
+}
+
+type musicVoice struct {
+	conn      *discordgo.VoiceConnection
+	channelID string
+	stopDrain chan struct{}
 }
 
 // New creates a new Bot. Call Start() to connect to Discord.
@@ -131,6 +143,7 @@ func (b *Bot) Stop() error {
 		b.voiceState = nil
 	}
 	b.voiceStateMu.Unlock()
+	b.LeaveMusic()
 
 	for _, cmd := range b.registeredCmds {
 		if err := b.session.ApplicationCommandDelete(b.session.State.User.ID, b.guildID, cmd.ID); err != nil {
@@ -322,11 +335,29 @@ func (b *Bot) JoinChannel(channelID string, campaignID int64) (string, error) {
 		return "", fmt.Errorf("create session: %w", err)
 	}
 
+	// Already in this channel for music: take over that connection so the
+	// music doesn't drop out. In a different channel: leave it first (the DJ
+	// engine holds its position through the short gap).
+	var vc *discordgo.VoiceConnection
+	b.voiceStateMu.Lock()
+	mv := b.music
+	if mv != nil && mv.channelID == channelID {
+		b.music = nil
+		close(mv.stopDrain)
+		vc = mv.conn
+	}
+	b.voiceStateMu.Unlock()
+	if mv != nil && vc == nil {
+		b.LeaveMusic()
+	}
+
 	// Join voice channel -- this blocks waiting for the voice connection.
 	// Do NOT hold voiceStateMu during this call or it deadlocks GetStatus/GetVoiceMembers.
-	vc, err := b.session.ChannelVoiceJoin(ctx, b.guildID, channelID, false, false)
-	if err != nil {
-		return "", fmt.Errorf("join voice: %w", err)
+	if vc == nil {
+		vc, err = b.session.ChannelVoiceJoin(ctx, b.guildID, channelID, false, false)
+		if err != nil {
+			return "", fmt.Errorf("join voice: %w", err)
+		}
 	}
 
 	// Get ignored users and character names for this campaign.
@@ -483,6 +514,88 @@ func (b *Bot) SetCharacterName(campaignID int64, userID string, name *string) {
 	}
 }
 
+// JoinMusic joins a voice channel for DJ playback without recording. If the
+// bot is already recording in that channel, music plays through the recording
+// connection and this is a no-op. Returns the channel name.
+func (b *Bot) JoinMusic(channelID string) (string, error) {
+	channel, err := b.session.Channel(channelID)
+	if err != nil {
+		return "", fmt.Errorf("channel not found: %w", err)
+	}
+
+	b.voiceStateMu.Lock()
+	if b.voiceState != nil {
+		recCh := b.voiceState.ChannelID
+		b.voiceStateMu.Unlock()
+		if recCh != channelID {
+			return "", fmt.Errorf("the bot is recording in another channel")
+		}
+		return channel.Name, nil
+	}
+	if b.music != nil && b.music.channelID == channelID {
+		b.voiceStateMu.Unlock()
+		return channel.Name, nil
+	}
+	moving := b.music != nil
+	b.voiceStateMu.Unlock()
+	if moving {
+		b.LeaveMusic()
+	}
+
+	// Not deafened: if a recording later starts in this channel it reuses
+	// this connection and needs the receive side. Until then received
+	// packets are drained and discarded so the receive buffer never fills.
+	// Speaking updates (SSRC -> user) are buffered by the library until the
+	// recorder registers its handler, so taking over later loses nothing.
+	vc, err := b.session.ChannelVoiceJoin(context.Background(), b.guildID, channelID, false, false)
+	if err != nil {
+		return "", fmt.Errorf("join voice: %w", err)
+	}
+	mv := &musicVoice{conn: vc, channelID: channelID, stopDrain: make(chan struct{})}
+	go func(recv chan *discordgo.Packet, stop chan struct{}) {
+		for {
+			select {
+			case <-stop:
+				return
+			case _, ok := <-recv:
+				if !ok {
+					return
+				}
+			}
+		}
+	}(vc.OpusRecv, mv.stopDrain)
+
+	b.voiceStateMu.Lock()
+	b.music = mv
+	b.voiceStateMu.Unlock()
+	log.Printf("Joined %s for music only", channel.Name)
+	if b.OnStatus != nil {
+		b.OnStatus()
+	}
+	return channel.Name, nil
+}
+
+// LeaveMusic disconnects a music-only voice connection. No-op otherwise.
+func (b *Bot) LeaveMusic() {
+	b.voiceStateMu.Lock()
+	mv := b.music
+	b.music = nil
+	b.voiceStateMu.Unlock()
+	if mv == nil {
+		return
+	}
+	close(mv.stopDrain)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := mv.conn.Disconnect(ctx); err != nil {
+		log.Printf("Music voice disconnect: %v", err)
+	}
+	log.Println("Left music-only voice channel")
+	if b.OnStatus != nil {
+		b.OnStatus()
+	}
+}
+
 // VoiceConnection returns the live voice connection while the bot is in a
 // channel, or nil. The DJ engine calls this every 20ms tick to find where to
 // send music, so it must stay cheap and must not block on voice I/O.
@@ -491,16 +604,21 @@ func (b *Bot) SetCharacterName(campaignID int64, userID string, name *string) {
 // always holds the connection discordgo is currently using for the guild.
 func (b *Bot) VoiceConnection() *discordgo.VoiceConnection {
 	b.voiceStateMu.Lock()
-	vs := b.voiceState
+	var fallback *discordgo.VoiceConnection
+	if b.voiceState != nil {
+		fallback = b.voiceState.Connection
+	} else if b.music != nil {
+		fallback = b.music.conn
+	}
 	b.voiceStateMu.Unlock()
-	if vs == nil {
+	if fallback == nil {
 		return nil
 	}
 	b.session.RLock()
 	vc := b.session.VoiceConnections[b.guildID]
 	b.session.RUnlock()
 	if vc == nil {
-		vc = vs.Connection
+		vc = fallback
 	}
 	return vc
 }
@@ -519,7 +637,18 @@ func (b *Bot) GetStatus() web.BotStatus {
 	b.voiceStateMu.Unlock()
 
 	if vs == nil {
-		return web.BotStatus{Recording: false}
+		b.voiceStateMu.Lock()
+		mv := b.music
+		b.voiceStateMu.Unlock()
+		if mv == nil {
+			return web.BotStatus{Recording: false}
+		}
+		var channelName *string
+		if ch, err := b.session.Channel(mv.channelID); err == nil {
+			channelName = &ch.Name
+		}
+		chID := mv.channelID
+		return web.BotStatus{MusicOnly: true, ChannelName: channelName, ChannelID: &chID}
 	}
 
 	var channelName *string
@@ -530,7 +659,9 @@ func (b *Bot) GetStatus() web.BotStatus {
 
 	return web.BotStatus{
 		Recording:   true,
+		Paused:      vs.Recorder.IsPaused(),
 		ChannelName: channelName,
+		ChannelID:   &vs.ChannelID,
 		CampaignID:  &vs.CampaignID,
 	}
 }
@@ -584,6 +715,12 @@ func (b *Bot) TogglePause() bool {
 	}
 	newState := !b.voiceState.Recorder.IsPaused()
 	b.voiceState.Recorder.SetPaused(newState)
+	// Broadcast so every client's Pause button shows the real state, not
+	// just the one that pressed it. Async: OnStatus calls GetStatus, which
+	// takes voiceStateMu (held here).
+	if b.OnStatus != nil {
+		go b.OnStatus()
+	}
 	return newState
 }
 
@@ -695,6 +832,7 @@ func (b *Bot) handleVoiceStateUpdate(s *discordgo.Session, vsu *discordgo.VoiceS
 	b.voiceStateMu.Unlock()
 
 	if vs == nil {
+		b.maybeLeaveEmptyMusicChannel(s, vsu)
 		return
 	}
 
@@ -738,6 +876,28 @@ func (b *Bot) handleVoiceStateUpdate(s *discordgo.Session, vsu *discordgo.VoiceS
 
 	log.Println("Voice channel emptied, auto-stopping session.")
 	b.LeaveChannel()
+}
+
+// maybeLeaveEmptyMusicChannel leaves a music-only channel once the last
+// non-bot user leaves it, matching the auto-leave the recording path has.
+func (b *Bot) maybeLeaveEmptyMusicChannel(s *discordgo.Session, vsu *discordgo.VoiceStateUpdate) {
+	b.voiceStateMu.Lock()
+	mv := b.music
+	b.voiceStateMu.Unlock()
+	if mv == nil || vsu.BeforeUpdate == nil || vsu.BeforeUpdate.ChannelID != mv.channelID || vsu.ChannelID == mv.channelID {
+		return
+	}
+	guild, err := s.State.Guild(b.guildID)
+	if err != nil {
+		return
+	}
+	for _, st := range guild.VoiceStates {
+		if st.ChannelID == mv.channelID && st.UserID != s.State.User.ID {
+			return
+		}
+	}
+	log.Println("Music channel emptied, leaving.")
+	b.LeaveMusic()
 }
 
 // --- Helpers ---

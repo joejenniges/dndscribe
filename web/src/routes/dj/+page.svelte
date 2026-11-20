@@ -1,17 +1,17 @@
 <script lang="ts">
   // DJ Studio, scenes first. The server owns playback (internal/dj); this
-  // page is a remote control. Live st arrives over the WebSocket
+  // page is a remote control. Live state arrives over the WebSocket
   // (djState); the library (scenes/playlists/tracks) is refetched whenever any
   // client changes it (djLibraryVersion).
   //
   // Layout intent (tablet at the table): big scene tiles you can hit without
   // looking, a persistent now-playing bar, playlists and tracks below.
   import { onMount } from 'svelte';
-  import { dj } from '$lib/api';
+  import { dj, channels as channelsApi, music } from '$lib/api';
   import { djState, djLibraryVersion } from '$lib/stores/dj';
   import { botStatus } from '$lib/stores/ws';
   import { addToast } from '$lib/stores/toast';
-  import type { DjPlaylist, DjScene, DjTrack } from '$lib/types';
+  import type { DjPlaylist, DjScene, DjTrack, VoiceChannel } from '$lib/types';
   import NowPlayingBar from '$lib/components/dj/NowPlayingBar.svelte';
   import SceneEditor from '$lib/components/dj/SceneEditor.svelte';
   import PlaylistEditor from '$lib/components/dj/PlaylistEditor.svelte';
@@ -112,7 +112,66 @@
     }
   }
 
-  const liveHref = $derived($botStatus.campaignId ? `/campaigns/${$botStatus.campaignId}/live` : '/');
+  // ---- Voice: join a channel for music without recording ----
+  let channelList = $state<VoiceChannel[]>([]);
+  let joinChannelId = $state('');
+  let joining = $state(false);
+
+  async function loadChannels() {
+    try {
+      channelList = await channelsApi.list();
+      // Default to the busiest channel: that's where the table is.
+      if (!joinChannelId && channelList.length) {
+        joinChannelId = [...channelList].sort((a, b) => b.members.length - a.members.length)[0].id;
+      }
+    } catch (e) {
+      addToast(`Couldn't load voice channels: ${(e as Error).message}`, 'error');
+    }
+  }
+
+  $effect(() => {
+    if (!$botStatus.recording && !$botStatus.musicOnly) loadChannels();
+  });
+
+  async function joinForMusic() {
+    if (!joinChannelId) return;
+    joining = true;
+    try {
+      await music.join(joinChannelId);
+    } catch (e) {
+      addToast(`Couldn't join: ${(e as Error).message}`, 'error');
+    } finally {
+      joining = false;
+    }
+  }
+
+  async function leaveMusic() {
+    try {
+      await dj.stop(0);
+      await music.leave();
+    } catch (e) {
+      addToast(`Couldn't leave: ${(e as Error).message}`, 'error');
+    }
+  }
+
+  // ---- Arrange mode: reorder scene tiles ----
+  // Arrow buttons rather than drag and drop: HTML5 drag events don't fire on
+  // touch screens, and the tablet is the main place this page is used.
+  let arranging = $state(false);
+
+  async function moveScene(i: number, d: number) {
+    const j = i + d;
+    if (j < 0 || j >= scenes.length) return;
+    const next = [...scenes];
+    [next[i], next[j]] = [next[j], next[i]];
+    scenes = next;
+    try {
+      await dj.scenes.order(next.map((s) => s.id));
+    } catch (e) {
+      addToast(`Couldn't save order: ${(e as Error).message}`, 'error');
+      load();
+    }
+  }
 </script>
 
 <svelte:head><title>DJ Studio - dndscribe</title></svelte:head>
@@ -124,11 +183,20 @@
       <h1 class="page-title">DJ Studio</h1>
     </div>
     <div class="conn">
-      {#if connected}
-        <span class="badge success">Playing into {$botStatus.channelName ?? 'voice'}</span>
+      {#if $botStatus.recording}
+        <span class="badge success">{connected ? 'Playing into' : 'Connecting to'} {$botStatus.channelName ?? 'voice'} (recording)</span>
+      {:else if $botStatus.musicOnly}
+        <span class="badge success">{connected ? 'Playing into' : 'Connecting to'} {$botStatus.channelName ?? 'voice'}</span>
+        <button class="btn btn-sm" onclick={leaveMusic}>Leave</button>
       {:else}
-        <span class="badge warning">Bot not in a voice channel</span>
-        <a class="btn btn-sm" href={liveHref}>Join from Live</a>
+        <select class="select" bind:value={joinChannelId} aria-label="Voice channel for music">
+          {#each channelList as c (c.id)}
+            <option value={c.id}>{c.name}{c.members.length ? ` (${c.members.length})` : ''}</option>
+          {/each}
+        </select>
+        <button class="btn-primary btn-sm" onclick={joinForMusic} disabled={!joinChannelId || joining}>
+          {joining ? 'Joining…' : 'Join for music'}
+        </button>
       {/if}
       <button class="btn btn-sm btn-ghost" onclick={() => run('tone', () => dj.tone(10))} disabled={!connected || pending === 'tone'}
         title="Play a 10 second 440 Hz tone to check the bot can be heard">Test tone</button>
@@ -142,7 +210,14 @@
   <section>
     <div class="section-head">
       <h2 class="section-title">Scenes</h2>
-      <button class="btn btn-sm" onclick={() => editScene(null)}>+ New scene</button>
+      <div class="pane-tools">
+        {#if scenes.length > 1}
+          <button class="btn btn-sm" class:btn-primary={arranging} onclick={() => (arranging = !arranging)} aria-pressed={arranging}>
+            {arranging ? 'Done' : 'Arrange'}
+          </button>
+        {/if}
+        <button class="btn btn-sm" onclick={() => editScene(null)} disabled={arranging}>+ New scene</button>
+      </div>
     </div>
     {#if loaded && scenes.length === 0}
       <div class="scenes">
@@ -153,17 +228,18 @@
       </div>
     {:else}
       <div class="scenes">
-        {#each scenes as s (s.id)}
+        {#each scenes as s, i (s.id)}
           {@const pl = s.playlistId ? playlistById.get(s.playlistId) : undefined}
           {@const active = st?.playing && st.sceneId === s.id}
-          <div class="scene-wrap">
+          <div class="scene-wrap" class:arranging>
             <button
               class="scene"
               class:active
               class:paused={active && st?.paused}
               style:--scene-color={s.color || 'var(--accent)'}
-              onclick={() => tapScene(s)}
+              onclick={() => !arranging && tapScene(s)}
               disabled={pending === `scene:${s.id}`}
+              tabindex={arranging ? -1 : 0}
               aria-pressed={active}
             >
               <span class="scene-name">{s.name}</span>
@@ -177,7 +253,14 @@
                 {/if}
               </span>
             </button>
-            <button class="scene-edit icon-btn" onclick={() => editScene(s)} aria-label="Edit {s.name}">&#8943;</button>
+            {#if arranging}
+              <div class="arrange">
+                <button class="icon-btn" onclick={() => moveScene(i, -1)} disabled={i === 0} aria-label="Move {s.name} earlier">&#9664;</button>
+                <button class="icon-btn" onclick={() => moveScene(i, 1)} disabled={i === scenes.length - 1} aria-label="Move {s.name} later">&#9654;</button>
+              </div>
+            {:else}
+              <button class="scene-edit icon-btn" onclick={() => editScene(s)} aria-label="Edit {s.name}">&#8943;</button>
+            {/if}
           </div>
         {/each}
       </div>
@@ -302,6 +385,11 @@
   .scene.empty { border: 1px dashed var(--border-strong); color: var(--text-2); grid-column: span 2; }
   .scene-name { font-size: 18px; font-weight: 700; padding-right: 36px; }
   .scene-meta { font-size: 13px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; }
+  .scene-wrap.arranging .scene { border-style: dashed; cursor: default; }
+  .scene-wrap.arranging .scene-name { padding-right: 100px; }
+  .arrange { position: absolute; top: 10px; right: 8px; display: flex; gap: 6px; }
+  .arrange .icon-btn { width: var(--touch); height: var(--touch); background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: var(--radius); }
+  .conn .select { min-height: var(--control-h-sm); max-width: 220px; }
   .scene-edit { position: absolute; top: 10px; right: 8px; width: var(--touch); height: var(--touch); font-size: 20px; color: var(--text-2); }
 
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }

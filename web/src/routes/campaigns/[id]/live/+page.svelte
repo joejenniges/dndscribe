@@ -20,7 +20,8 @@
   let selectedSession = $state<number | undefined>(undefined);
   let loadingLines = $state(false);
   let mergeOpen = $state(false);
-  let paused = $state(false);
+  // From the server, so it is right even if paused from another tab or a slash command.
+  const paused = $derived($botStatus.paused);
 
   let renameOpen = $state(false);
   let renameValue = $state('');
@@ -70,7 +71,6 @@
   async function togglePause() {
     try {
       const result = await voice.pause();
-      paused = result.paused;
       addToast(result.paused ? 'Transcription paused' : 'Transcription resumed', 'info');
     } catch (e) {
       addToast(`Failed: ${e}`, 'error');
