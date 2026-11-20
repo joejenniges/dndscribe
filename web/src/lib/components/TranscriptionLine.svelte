@@ -16,6 +16,7 @@
     nextIsContinuation = false,
     showConfidence = true,
     speakerBadge = '',
+    compact = false,
   }: {
     line: TranscriptionLine;
     onEdit: (id: number, text: string) => void;
@@ -33,6 +34,8 @@
     // Diarization badge text (display name or "S1"); empty hides the badge.
     // The page decides visibility (only users with >1 detected speaker).
     speakerBadge?: string;
+    // Compact density: single-row lines (the pre-redesign layout).
+    compact?: boolean;
   } = $props();
 
   // Track whether the user is currently editing (focused on the text span)
@@ -82,8 +85,6 @@
   const isCurrentMatch = $derived(!!searchHighlight?.isCurrentMatch);
 
   let confirmDelete = $state(false);
-  let playingIdx = $state(-1);
-  let audioEl: HTMLAudioElement | null = $state(null);
   let textEl: HTMLSpanElement | undefined = $state();
   let lineEl: HTMLDivElement | undefined = $state();
   let wordHighlightEl: HTMLDivElement | undefined = $state();
@@ -359,36 +360,97 @@
 
 <div
   class="line"
+  class:compact
   class:has-audio={hasAudio}
   class:selected
   class:playing={isPlaying}
   class:search-match={isSearchMatch}
   class:search-highlight={isCurrentMatch}
-  class:condensed-continuation={isContinuation}
-  class:condensed-group-member={nextIsContinuation}
+  class:continuation={isContinuation}
+  class:group-member={nextIsContinuation}
   bind:this={lineEl}
   data-id={line.id}
   data-discord-username={line.discordUsername}
   data-nickname={line.nickname ?? ''}
 >
-  <span class="line-actions">
+  <div class="gutter">
     {#if hasAudio}
-      <button class="play-btn" class:playing={playingIdx >= 0} onclick={togglePlay}>
-        {playingIdx >= 0 ? '\u25A0' : '\u25B6'}
-      </button>
+      <button
+        class="play-btn"
+        class:playing={isPlaying}
+        onclick={togglePlay}
+        aria-label={isPlaying ? `Replay audio from ${speaker}` : `Play audio from ${speaker}`}
+        title="Play line audio"
+      >{isPlaying ? '■' : '▶'}</button>
     {/if}
-    {#if showConfidence && line.confidence != null}
-      <span class="line-confidence" class:high={line.confidence >= 0.8} class:med={line.confidence >= 0.5 && line.confidence < 0.8} class:low={line.confidence < 0.5}>
-        {Math.round(line.confidence * 100)}%
-      </span>
+  </div>
+
+  <div class="content">
+    {#if !isContinuation || compact}
+      <div class="head" class:invisible={isContinuation}>
+        <button
+          class="line-speaker"
+          style:color={speakerColor || 'var(--accent)'}
+          onmousedown={handleSpeakerMousedown}
+          onclick={(e) => { e.preventDefault(); if (!speakerDragOccurred) onSpeakerClick(line.discordUsername); speakerDragOccurred = false; }}
+          title="Drag across lines to set nicknames"
+          tabindex={isContinuation ? -1 : 0}
+        >
+          {speaker}{#if speakerBadge}<span class="speaker-badge">{speakerBadge}</span>{/if}
+        </button>
+        <span class="line-time">{time}</span>
+        {#if showConfidence && line.confidence != null}
+          <span
+            class="line-confidence"
+            class:high={line.confidence >= 0.8}
+            class:med={line.confidence >= 0.5 && line.confidence < 0.8}
+            class:low={line.confidence < 0.5}
+            title="Transcription confidence"
+          >{Math.round(line.confidence * 100)}%</span>
+        {/if}
+      </div>
     {/if}
-    <button class="delete-btn" class:confirm={confirmDelete} onclick={handleDelete}>
-      {confirmDelete ? '\u2716' : '\u00D7'}
-    </button>
-    <button class="stats-btn" class:active={showStats} onclick={() => { showStats = !showStats; }} title="Audio stats">
-      i
-    </button>
-  </span>
+
+    {#if highlightedHtml && !isEditing}
+      <span
+        class="line-text"
+        bind:this={textEl}
+        contenteditable="true"
+        spellcheck="false"
+        role="textbox"
+        tabindex={0}
+        onfocus={handleFocus}
+        onblur={handleBlur}
+        onkeydown={handleTextKeydown}
+      >{@html highlightedHtml}</span>
+    {:else}
+      <span
+        class="line-text"
+        bind:this={textEl}
+        contenteditable="true"
+        spellcheck="false"
+        role="textbox"
+        tabindex={0}
+        onfocus={handleFocus}
+        onblur={handleBlur}
+        onkeydown={handleTextKeydown}
+      >{line.text}</span>
+    {/if}
+  </div>
+
+  <div class="line-actions">
+    {#if isContinuation && !compact && showConfidence && line.confidence != null}
+      <span class="line-confidence subtle-conf" title="Transcription confidence">{Math.round(line.confidence * 100)}%</span>
+    {/if}
+    <button class="act-btn" class:active={showStats} onclick={() => { showStats = !showStats; }} aria-label="Line details" title="Line details">i</button>
+    <button
+      class="act-btn danger"
+      class:confirm={confirmDelete}
+      onclick={handleDelete}
+      aria-label={confirmDelete ? 'Confirm delete line' : 'Delete line'}
+      title={confirmDelete ? 'Click again to delete' : 'Delete line'}
+    >{confirmDelete ? 'Delete?' : '×'}</button>
+  </div>
 
   {#if showStats}
     <div class="stats-flyout">
@@ -412,131 +474,129 @@
       {/if}
     </div>
   {/if}
-
-  {#if isContinuation}
-    <span class="line-time" style="visibility:hidden"></span>
-    <span class="line-speaker" style="visibility:hidden">{speaker}</span>
-  {:else}
-    <span class="line-time">{time}</span>
-    <button
-      class="line-speaker"
-      style:color={speakerColor || 'var(--accent)'}
-      onmousedown={handleSpeakerMousedown}
-      onclick={(e) => { e.preventDefault(); if (!speakerDragOccurred) onSpeakerClick(line.discordUsername); speakerDragOccurred = false; }}
-    >
-      {speaker}{#if speakerBadge}<span class="speaker-badge">{speakerBadge}</span>{/if}
-    </button>
-  {/if}
-
-  {#if highlightedHtml && !isEditing}
-    <span
-      class="line-text"
-      bind:this={textEl}
-      contenteditable="true"
-      spellcheck="false"
-      role="textbox"
-      tabindex={0}
-      onfocus={handleFocus}
-      onblur={handleBlur}
-      onkeydown={handleTextKeydown}
-    >{@html highlightedHtml}</span>
-  {:else}
-    <span
-      class="line-text"
-      bind:this={textEl}
-      contenteditable="true"
-      spellcheck="false"
-      role="textbox"
-      tabindex={0}
-      onfocus={handleFocus}
-      onblur={handleBlur}
-      onkeydown={handleTextKeydown}
-    >{line.text}</span>
-  {/if}
   <div class="word-highlight" bind:this={wordHighlightEl}></div>
 </div>
 
 <style>
+  /* ── Comfortable (default) ── */
   .line {
-    padding: 6px 16px; font-size: 14px; line-height: 1.5;
-    display: flex; gap: 8px; align-items: baseline;
-    border-bottom: 1px solid #1e1e1e;
-    border-left: 3px solid transparent;
     position: relative;
+    display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 14px;
+    padding: 14px 12px 14px 14px;
+    border-bottom: 1px solid #23262b;
+    border-left: 3px solid transparent;
   }
-  .line:hover { background: var(--bg-secondary); }
-  .line.has-audio { border-left-color: var(--success); }
-  .line.playing { border-left-color: var(--accent); background: rgba(233, 69, 96, 0.05); }
-  .line.selected { background: var(--bg-elevated); }
-  .line.search-match { background: #1a2a1a; }
-  .line.search-highlight { background: #1a331a; }
-  :global(mark) { background: #4caf50; color: #000; font-weight: 600; border-radius: 2px; padding: 0 1px; }
-  :global(.line.speaker-selected) { background: rgba(66, 165, 245, 0.12); }
-  .line-time { color: var(--text-muted); font-size: 12px; white-space: nowrap; min-width: 60px; }
+  .line:hover { background: var(--surface-sunken); }
+  .line.continuation { padding-top: 2px; }
+  .line.group-member { border-bottom-color: transparent; padding-bottom: 6px; }
+  .line.playing { border-left-color: var(--accent); background: rgba(244, 63, 98, 0.06); }
+  .line.selected { background: var(--surface-raised); }
+  .line.search-match { background: rgba(116, 215, 169, 0.06); }
+  .line.search-highlight { background: rgba(116, 215, 169, 0.14); }
+  :global(.line mark) { background: var(--success); color: #0b1a13; font-weight: 600; border-radius: 3px; padding: 0 2px; }
+  :global(.line.speaker-selected) { background: rgba(124, 182, 250, 0.12); }
+
+  .gutter { display: flex; justify-content: center; padding-top: 2px; }
+  .play-btn {
+    width: 36px; height: 36px; border-radius: var(--radius); border: 1px solid transparent;
+    background: var(--surface-raised); color: var(--text-2); font-size: 12px; line-height: 1;
+    display: grid; place-items: center;
+  }
+  .play-btn:hover { color: var(--text); background: #30343b; }
+  .play-btn.playing { background: var(--accent-soft); color: var(--accent-text); border-color: #5a2b42; }
+  .continuation .play-btn { width: 32px; height: 28px; background: transparent; }
+  .continuation .play-btn:hover { background: var(--surface-raised); }
+
+  .content { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 22px; }
+  .head.invisible { visibility: hidden; }
   .line-speaker {
-    color: var(--accent); font-weight: 600; white-space: nowrap;
-    background: none; border: none; cursor: pointer; padding: 0; font-size: 14px;
-    user-select: none;
+    background: none; border: 0; padding: 0; font-weight: 700; font-size: 14px;
+    cursor: pointer; user-select: none; border-radius: 4px;
   }
   .line-speaker:hover { text-decoration: underline; }
-  /* Diarization badge: which voice on a shared mic said this line. */
   .speaker-badge {
-    margin-left: 5px; padding: 1px 5px; border-radius: 8px;
+    margin-left: 6px; padding: 1px 6px; border-radius: 8px;
     font-size: 10px; font-weight: 700; vertical-align: 1px;
-    background: color-mix(in srgb, currentColor 18%, transparent);
-    color: inherit;
+    background: color-mix(in srgb, currentColor 18%, transparent); color: inherit;
   }
+  .line-time { color: var(--text-3); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .line-confidence {
+    font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 99px;
+    background: var(--surface-raised); color: var(--text-2); white-space: nowrap;
+  }
+  .line-confidence.high { color: var(--success); }
+  .line-confidence.med { color: var(--warning); }
+  .line-confidence.low { color: var(--danger); background: rgba(255, 107, 129, 0.12); }
+  .subtle-conf { background: transparent; color: var(--text-3); }
+
   .line-text {
-    flex: 1; cursor: text; padding: 0 4px; border-radius: 3px;
-    outline: none; min-width: 0;
+    font-size: 15px; line-height: 1.6; color: #e2e5e9;
+    cursor: text; padding: 1px 6px; margin-left: -6px; border-radius: 5px; outline: none;
+    white-space: pre-wrap; overflow-wrap: anywhere;
   }
-  .line-text:hover { background: #1e1e1e; }
-  .line-text:focus { background: var(--bg-elevated); outline: 1px solid var(--accent); }
+  .line-text:hover { background: rgba(255, 255, 255, 0.03); }
+  .line-text:focus { background: var(--surface-raised); box-shadow: 0 0 0 1px var(--accent); }
+
+  .line-actions { display: flex; align-items: flex-start; gap: 4px; opacity: 0; transition: opacity 0.1s; }
+  .line:hover .line-actions, .line:focus-within .line-actions, .line-actions:has(.active), .line-actions:has(.confirm) { opacity: 1; }
+  /* Touch devices have no hover: keep actions visible. */
+  @media (hover: none) { .line-actions { opacity: 1; } }
+  .act-btn {
+    min-width: 32px; height: 32px; padding: 0 8px; border-radius: var(--radius-sm);
+    border: 1px solid transparent; background: transparent; color: var(--text-3);
+    font-size: 15px; font-weight: 700; line-height: 1;
+  }
+  .act-btn:hover { background: var(--surface-raised); color: var(--text); }
+  .act-btn.active { color: var(--accent-text); background: var(--accent-soft); }
+  .act-btn.danger:hover { color: var(--danger); }
+  .act-btn.confirm { color: #fff; background: var(--accent-strong); font-size: 12px; }
+
+  /* ── Compact: one row per line ── */
+  .line.compact {
+    grid-template-columns: 32px minmax(0, 1fr) auto; gap: 8px;
+    padding: 4px 10px; align-items: start;
+  }
+  .line.compact.continuation { padding-top: 0; }
+  .compact .gutter { padding-top: 0; }
+  .compact .play-btn { width: 30px; height: 28px; font-size: 10px; background: transparent; }
+  .compact .play-btn:hover { background: var(--surface-raised); }
+  .compact .content { flex-direction: row; align-items: baseline; gap: 10px; }
+  .compact .head { flex-wrap: nowrap; flex-shrink: 0; gap: 8px; min-height: 28px; }
+  .compact .line-time { order: -1; min-width: 78px; }
+  /* Fixed speaker column so text lines up regardless of name length. */
+  .compact .line-speaker { width: 120px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .compact .line-confidence { order: -2; padding: 1px 6px; font-size: 10px; min-width: 38px; text-align: center; }
+  .compact .line-text { font-size: 14px; line-height: 1.5; padding-top: 3px; }
+  .compact .act-btn { height: 28px; min-width: 28px; }
+
   .word-highlight {
     display: none; position: fixed;
-    background: rgba(233, 69, 96, 0.3); border: 1px solid #e94560;
+    background: rgba(244, 63, 98, 0.3); border: 1px solid var(--accent);
     border-radius: 2px; pointer-events: none; z-index: 10;
   }
-  .line-actions { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
-  .play-btn, .delete-btn {
-    background: none; border: none; cursor: pointer; font-size: 14px;
-    padding: 0 4px; opacity: 0.5;
-  }
-  .play-btn { color: var(--success); }
-  .play-btn:hover, .play-btn.playing { opacity: 1; }
-  .play-btn.playing { color: var(--accent); }
-  .delete-btn { color: var(--text-secondary); }
-  .delete-btn:hover { opacity: 1; }
-  .delete-btn.confirm { color: var(--accent); opacity: 1; }
-  .line-confidence { font-size: 10px; padding: 1px 4px; border-radius: 3px; white-space: nowrap; }
-  .line-confidence.high { color: #4caf50; }
-  .line-confidence.med { color: #ff9800; }
-  .line-confidence.low { color: #e94560; font-weight: 600; }
-  .condensed-continuation { border-bottom: none; padding-top: 0; }
-  .condensed-group-member { border-bottom: none; }
-  .stats-btn {
-    background: none; border: none; cursor: pointer; font-size: 10px;
-    padding: 0 3px; opacity: 0.3; color: var(--text-secondary);
-    font-style: italic; font-weight: 700; line-height: 1;
-  }
-  .stats-btn:hover, .stats-btn.active { opacity: 1; color: var(--accent); }
+
   .stats-flyout {
-    position: absolute; right: 0; top: 100%; z-index: 50;
-    background: var(--bg-secondary); border: 1px solid var(--border-light);
-    border-radius: 6px; padding: 8px 12px; min-width: 250px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.5); font-size: 12px;
+    position: absolute; right: 12px; top: calc(100% - 8px); z-index: 50;
+    background: var(--surface-raised); border: 1px solid var(--border-strong);
+    border-radius: var(--radius); padding: 10px 14px; min-width: 260px;
+    box-shadow: var(--shadow); font-size: 13px;
   }
-  .stats-row {
-    display: flex; justify-content: space-between; gap: 12px;
-    padding: 2px 0; border-bottom: 1px solid #1e1e1e;
-  }
+  .stats-row { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; border-bottom: 1px solid var(--border-color); }
   .stats-row:last-child { border-bottom: none; }
-  .stats-label { color: var(--text-muted); white-space: nowrap; }
-  .stats-file span { font-size: 10px; word-break: break-all; }
-  .stats-flyout .high { color: #4caf50; }
-  .stats-flyout .med { color: #ff9800; }
-  .stats-flyout .low { color: #e94560; font-weight: 600; }
-  /* Hide native blue selection while our red word-snap overlay is active */
+  .stats-label { color: var(--text-3); white-space: nowrap; }
+  .stats-file span { font-size: 11px; word-break: break-all; }
+  .stats-flyout .high { color: var(--success); }
+  .stats-flyout .med { color: var(--warning); }
+  .stats-flyout .low { color: var(--danger); font-weight: 600; }
+
+  /* Hide native selection while the word-snap overlay is active */
   :global(.dragging-words)::selection { background: transparent; color: inherit; }
   :global(.dragging-words) *::selection { background: transparent; color: inherit; }
+
+  @media (max-width: 650px) {
+    .line { grid-template-columns: 36px minmax(0, 1fr); gap: 10px; padding: 12px 8px; }
+    .line-actions { position: absolute; top: 8px; right: 6px; }
+    .line.compact .content { flex-direction: column; gap: 2px; }
+  }
 </style>

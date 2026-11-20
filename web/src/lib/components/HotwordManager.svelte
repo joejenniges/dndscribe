@@ -58,66 +58,48 @@
   }
 </script>
 
-<div class="hotwords-panel">
-  <div class="panel-header">Hotwords ({$hotwords.length})</div>
-  <div class="hotwords-add">
+<div class="hotwords">
+  <div class="add-row">
     <input
+      class="input"
       type="text"
       bind:value={newWord}
-      placeholder="Add hotword..."
+      placeholder="Add a name, place or term…"
+      aria-label="New hotword"
       onkeydown={handleAddKeydown}
     />
-    <button class="btn-primary" onclick={addWord}>+</button>
+    <button class="btn-primary" onclick={addWord} disabled={!newWord.trim()}>Add</button>
   </div>
-  <div class="hotwords-list">
-    {#each $hotwords as word}
-      <div class="hotword-item">
-        {#if editingWord === word}
-          <input
-            class="hotword-edit-input"
-            bind:value={editValue}
-            onkeydown={handleEditKeydown}
-            onblur={saveEdit}
-          />
-        {:else}
-          <span ondblclick={() => startEdit(word)} role="button" tabindex="0">{word}</span>
-        {/if}
-        <button class="hotword-remove" onclick={() => removeWord(word)}>&times;</button>
-      </div>
-    {/each}
-  </div>
+  {#if $hotwords.length === 0}
+    <p class="subtle small">No hotwords yet.</p>
+  {:else}
+    <ul class="word-list">
+      {#each $hotwords as word (word)}
+        <li class="word">
+          {#if editingWord === word}
+            <!-- svelte-ignore a11y_autofocus -->
+            <input class="input edit" bind:value={editValue} autofocus onkeydown={handleEditKeydown} onblur={saveEdit} aria-label="Edit hotword" />
+          {:else}
+            <button class="word-text" onclick={() => startEdit(word)} title="Click to edit">{word}</button>
+          {/if}
+          <button class="remove" onclick={() => removeWord(word)} aria-label="Remove {word}" title="Remove">&times;</button>
+        </li>
+      {/each}
+    </ul>
+  {/if}
 </div>
 
 <style>
-  .hotwords-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-  .panel-header {
-    padding: 8px 16px; font-size: 13px; font-weight: 600;
-    color: var(--text-secondary); border-bottom: 1px solid var(--border);
+  .hotwords { display: flex; flex-direction: column; gap: 14px; }
+  .add-row { display: flex; gap: 8px; max-width: 520px; }
+  .word-list { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; }
+  .word {
+    display: inline-flex; align-items: center; min-height: 38px;
+    border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-sunken);
   }
-  .hotwords-add {
-    display: flex; padding: 8px; gap: 6px; border-bottom: 1px solid var(--border);
-  }
-  .hotwords-add input {
-    flex: 1; background: var(--bg-primary); border: 1px solid var(--border);
-    color: var(--text-primary); padding: 6px 10px; border-radius: 4px; font-size: 13px;
-  }
-  .hotwords-add input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
-  .hotwords-list { flex: 1; overflow-y: auto; padding: 4px 0; }
-  .hotword-item {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 4px 12px; font-size: 13px;
-  }
-  .hotword-item:hover { background: var(--bg-primary); }
-  .hotword-item span { cursor: pointer; }
-  .hotword-item span:hover { text-decoration: underline; }
-  .hotword-edit-input {
-    background: var(--bg-primary); border: 1px solid var(--accent);
-    color: var(--text-primary); padding: 2px 6px; border-radius: 3px;
-    font-size: 13px; width: 120px;
-  }
-  .hotword-remove {
-    background: none; border: none; color: var(--text-muted);
-    cursor: pointer; font-size: 16px; padding: 0 4px;
-  }
-  .hotword-remove:hover { color: var(--accent); }
+  .word-text { background: none; border: 0; padding: 0 4px 0 12px; min-height: 36px; font-size: 14px; }
+  .word-text:hover { color: var(--accent-text); }
+  .edit { min-height: 36px; width: 160px; border: 0; }
+  .remove { background: none; border: 0; width: 34px; min-height: 36px; color: var(--text-3); font-size: 18px; }
+  .remove:hover { color: var(--danger); }
 </style>

@@ -143,9 +143,10 @@
     class="filter-toggle"
     class:active={filterActive}
     onclick={() => { filterActive = !filterActive; }}
-    title={filterActive ? 'Show all lines' : 'Show only matches'}
+    title={filterActive ? 'Show all lines' : 'Show only matching lines'}
+    aria-pressed={filterActive}
   >
-    &#x1D50D;
+    {filterActive ? 'Matches only' : 'Filter'}
   </button>
 
   {#if autocompleteOpen}
@@ -190,8 +191,8 @@
     white-space: nowrap; pointer-events: none;
   }
   .filter-toggle {
-    background: var(--bg-primary); border: 1px solid var(--border); color: var(--text-muted);
-    cursor: pointer; font-size: 14px; padding: 5px 8px; border-radius: 4px; line-height: 1;
+    background: var(--bg-primary); border: 1px solid var(--border); color: var(--text-secondary);
+    cursor: pointer; font-size: 13px; font-weight: 600; padding: 5px 12px; border-radius: 4px; line-height: 1; white-space: nowrap;
   }
   .filter-toggle:hover { color: var(--text-primary); border-color: var(--text-muted); }
   .filter-toggle.active { background: var(--accent); color: #fff; border-color: var(--accent); }

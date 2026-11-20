@@ -49,62 +49,38 @@
   }
 </script>
 
-<div class="members-panel">
-  <div class="panel-header">Voice Members ({$voiceMembers.length})</div>
+<div class="panel-group members">
+  <h3>Voice members <span class="count">({$voiceMembers.length})</span></h3>
   {#if $voiceMembers.length > 0}
-    <div class="members-list">
-      {#each $voiceMembers as member}
-        <div class="member-item">
+    <ul class="members-list">
+      {#each $voiceMembers as member (member.id)}
+        <li class="member-item">
           <span class="member-username">{member.username}</span>
           <div class="member-row">
             <input
-              class="member-char-input"
+              class="input member-char-input"
               data-user-id={member.id}
               placeholder="Character name"
+              aria-label="Character name for {member.username}"
               bind:value={charInputs[member.id]}
               onblur={() => setName(member.id)}
               onkeydown={(e) => handleKeydown(e, member.id)}
             />
-            <button class="palette-btn" title="Name palette" onclick={() => openPalette(member.id, member.username)}>
-              &#9776;
-            </button>
-            <button class="ignore-btn" title="Ignore user" onclick={() => ignoreUser(member.id, member.username)}>
-              &#128683;
-            </button>
+            <button class="icon-btn bordered" title="Open name palette" aria-label="Open name palette for {member.username}" onclick={() => openPalette(member.id, member.username)}>&#9776;</button>
+            <button class="icon-btn bordered danger" title="Ignore user" aria-label="Ignore {member.username}" onclick={() => ignoreUser(member.id, member.username)}>&#8856;</button>
           </div>
-        </div>
+        </li>
       {/each}
-    </div>
+    </ul>
   {:else}
-    <div class="members-empty">Not in a voice channel</div>
+    <p class="subtle small">Not in a voice channel.</p>
   {/if}
 </div>
 
 <style>
-  .members-panel { border-bottom: 1px solid var(--border); }
-  .panel-header {
-    padding: 8px 16px; font-size: 13px; font-weight: 600;
-    color: var(--text-secondary); border-bottom: 1px solid var(--border);
-  }
-  .members-list { max-height: 250px; overflow-y: auto; }
-  .member-item {
-    padding: 6px 12px; font-size: 13px;
-    display: flex; flex-direction: column; gap: 2px;
-    border-bottom: 1px solid #1e1e1e;
-  }
-  .member-username { color: #aaa; font-size: 12px; }
+  .members-list { list-style: none; display: flex; flex-direction: column; gap: 12px; }
+  .member-item { display: flex; flex-direction: column; gap: 4px; }
+  .member-username { color: var(--text-2); font-size: 12px; font-weight: 600; }
   .member-row { display: flex; align-items: center; gap: 6px; }
-  .member-char-input {
-    flex: 1; background: var(--bg-primary); border: 1px solid var(--border);
-    color: var(--text-primary); padding: 3px 8px; border-radius: 3px; font-size: 13px;
-  }
-  .member-char-input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
-  .member-char-input::placeholder { color: var(--text-muted); }
-  .ignore-btn, .palette-btn {
-    background: none; border: none; color: var(--text-muted);
-    cursor: pointer; font-size: 14px; padding: 2px 4px;
-  }
-  .ignore-btn:hover { color: var(--accent); }
-  .palette-btn:hover { color: var(--text-primary); }
-  .members-empty { padding: 12px; text-align: center; color: var(--text-muted); font-size: 12px; }
+  .member-char-input { flex: 1; min-width: 0; }
 </style>

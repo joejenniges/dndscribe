@@ -5,7 +5,8 @@ import type { BotStatus, VoiceMember } from '$lib/types';
 export const botStatus: Writable<BotStatus> = writable({ recording: false, channelName: null, campaignId: null });
 export const voiceMembers: Writable<VoiceMember[]> = writable([]);
 export const saveRecordingsEnabled: Writable<boolean> = writable(false);
-export const wsConnected: Writable<boolean> = writable(false);
+// Optimistically true so nothing flashes "offline" during the first connect.
+export const wsConnected: Writable<boolean> = writable(true);
 
 // Initialize WS message handling -- call once from root layout
 export function initWsStores(): () => void {
@@ -22,6 +23,9 @@ export function initWsStores(): () => void {
         break;
       case 'members':
         voiceMembers.set(msg.data || []);
+        break;
+      case 'ws_closed':
+        wsConnected.set(false);
         break;
       case 'save_recordings':
         saveRecordingsEnabled.set(msg.data);

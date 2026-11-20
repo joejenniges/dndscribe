@@ -9,7 +9,8 @@ let currentCampaignId: number | null = null;
 
 function getWsUrl(): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${location.host}`;
+  // /ws so the Vite dev proxy can route it; the Go server upgrades on any path.
+  return `${proto}//${location.host}/ws`;
 }
 
 export function connect(): void {
@@ -39,6 +40,9 @@ export function connect(): void {
 
   ws.onclose = () => {
     ws = null;
+    // Synthetic event so UI can show a disconnected state; the server's
+    // 'init' message on reconnect flips it back.
+    for (const handler of handlers) handler({ type: 'ws_closed' });
     scheduleReconnect();
   };
 

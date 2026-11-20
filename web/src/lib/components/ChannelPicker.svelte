@@ -49,10 +49,10 @@
 
 <div class="channel-picker">
   {#if $botStatus.recording}
-    <button class="btn-primary" onclick={leave}>Leave {$botStatus.channelName}</button>
+    <button class="btn-danger" onclick={leave} title="Stop recording and leave the voice channel">Leave {$botStatus.channelName}</button>
   {:else}
-    <button class="btn" onclick={toggle} disabled={loading}>
-      {loading ? 'Joining...' : 'Join Channel'}
+    <button class="btn-primary" onclick={toggle} disabled={loading} aria-haspopup="listbox" aria-expanded={open}>
+      {loading ? 'Joining…' : 'Join channel'}
     </button>
   {/if}
 
@@ -81,25 +81,21 @@
 
 <style>
   .channel-picker { position: relative; }
-  .dropdown-overlay {
-    position: fixed; inset: 0; z-index: 49;
-  }
+  .dropdown-overlay { position: fixed; inset: 0; z-index: 49; }
   .dropdown {
-    position: absolute; top: 100%; left: 0; margin-top: 4px;
-    background: var(--bg-secondary); border: 1px solid var(--border);
-    border-radius: 4px; min-width: 220px; z-index: 50;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    position: absolute; top: calc(100% + 6px); right: 0;
+    background: var(--surface-raised); border: 1px solid var(--border-strong);
+    border-radius: var(--radius); min-width: 280px; z-index: 50; padding: 6px;
+    box-shadow: var(--shadow);
   }
   .dropdown-item {
-    display: block; width: 100%; text-align: left;
-    padding: 8px 14px; background: none; border: none;
-    color: var(--text-primary); font-size: 13px;
-    border-bottom: 1px solid var(--border);
+    display: block; width: 100%; text-align: left; min-height: 48px;
+    padding: 10px 12px; background: none; border: none; border-radius: var(--radius-sm);
+    color: var(--text); font-size: 14px;
   }
-  .dropdown-item:last-child { border-bottom: none; }
-  .dropdown-item:hover { background: var(--bg-elevated); }
-  .dropdown-item-header { display: flex; justify-content: space-between; }
-  .member-count { color: var(--text-muted); font-size: 11px; }
-  .dropdown-item-sub { color: var(--text-secondary); font-size: 11px; margin-top: 3px; }
-  .dropdown-empty { padding: 12px; text-align: center; color: var(--text-muted); font-size: 12px; }
+  .dropdown-item:hover { background: var(--surface-hover); }
+  .dropdown-item-header { display: flex; justify-content: space-between; gap: 12px; font-weight: 600; }
+  .member-count { color: var(--text-3); font-size: 12px; }
+  .dropdown-item-sub { color: var(--text-2); font-size: 12px; margin-top: 3px; }
+  .dropdown-empty { padding: 14px; text-align: center; color: var(--text-3); font-size: 13px; }
 </style>
