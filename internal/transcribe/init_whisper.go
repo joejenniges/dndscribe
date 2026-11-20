@@ -14,6 +14,14 @@ import (
 // the worker. Both engines are linked into every build; the choice is made here
 // at runtime. Requires CGo (whisper.cpp + sherpa-onnx/onnxruntime native libs).
 func (w *Worker) Init(cfg *config.TranscribeConfig) error {
+	// Diarization is engine-independent: whisper identifies per flushed chunk,
+	// sherpa per streaming segment via the engine's identify callback.
+	diarizer, err := NewDiarizer(&cfg.Diarization)
+	if err != nil {
+		return fmt.Errorf("init diarization: %w", err)
+	}
+	w.SetDiarizer(diarizer)
+
 	switch strings.ToLower(cfg.Engine) {
 	case "sherpa":
 		punct, err := NewPunctuator(&cfg.Sherpa.Punctuation)
@@ -25,8 +33,12 @@ func (w *Worker) Init(cfg *config.TranscribeConfig) error {
 			punct.Close()
 			return fmt.Errorf("init sherpa engine: %w", err)
 		}
+		if diarizer != nil {
+			engine.SetIdentify(w.identifySpeaker)
+		}
 		w.SetStreamEngine(engine)
-		log.Printf("Transcription engine: sherpa (streaming, punctuation=%v)", punct != nil)
+		log.Printf("Transcription engine: sherpa (streaming, punctuation=%v, diarization=%v)",
+			punct != nil, diarizer != nil)
 		return nil
 	case "", "whisper":
 		modelDir := filepath.Join(w.recordingDir, "models")

@@ -38,6 +38,7 @@ type Task struct {
 type Worker struct {
 	engine       Engine          // batch engine (whisper); nil in streaming mode
 	streamEngine StreamingEngine // streaming engine (sherpa); nil in batch mode
+	diarizer     *Diarizer       // nil when diarization is disabled
 	queue        chan *Task
 	done         chan struct{}
 	wg           sync.WaitGroup
@@ -55,8 +56,9 @@ type Worker struct {
 	OnFinalized func()
 	// OnPartial fires for provisional streaming hypotheses (streaming engine
 	// only). Ephemeral — not persisted; the web layer renders and supersedes
-	// these live.
-	OnPartial func(userID, username, nickname, text string)
+	// these live. speakerLabel is the diarization label ("S1"...), or the
+	// speaker's display name once assigned; empty when unknown.
+	OnPartial func(userID, username, nickname, text, speakerLabel string)
 }
 
 // streaming reports whether the worker is running a streaming engine.
@@ -88,6 +90,27 @@ func (w *Worker) SetStreamEngine(e StreamingEngine) {
 	e.SetCallback(w.handleStreamResult)
 }
 
+// SetDiarizer attaches speaker identification (nil = off). Engine-independent:
+// the whisper path calls identifySpeaker per flushed chunk; the sherpa engine
+// gets it as its identify callback (wired in Init).
+func (w *Worker) SetDiarizer(d *Diarizer) { w.diarizer = d }
+
+// identifySpeaker resolves the speaker for a segment of 16kHz audio in the
+// context of the active campaign. Returns (0, "") when diarization is off,
+// no campaign is active, or the segment is too short.
+func (w *Worker) identifySpeaker(userID string, samples16k []float32) (int64, string) {
+	if w.diarizer == nil {
+		return 0, ""
+	}
+	w.mu.RLock()
+	cid := w.campaignID
+	w.mu.RUnlock()
+	if cid == nil {
+		return 0, ""
+	}
+	return w.diarizer.Identify(context.Background(), *cid, userID, samples16k)
+}
+
 // Start launches the background processing goroutine.
 func (w *Worker) Start() {
 	w.wg.Add(1)
@@ -105,6 +128,7 @@ func (w *Worker) Stop() {
 	if w.streamEngine != nil {
 		w.streamEngine.Close()
 	}
+	w.diarizer.Close() // nil-safe
 	log.Printf("Transcription worker stopped, %d tasks remaining in queue", len(w.queue))
 }
 
@@ -321,6 +345,28 @@ func (w *Worker) SetCampaignID(id *int64) {
 	w.campaignID = id
 }
 
+// UpdateSpeakerName persists a diarization speaker's display name and pushes
+// it into the live diarizer cache so subsequent lines/partials use it.
+func (w *Worker) UpdateSpeakerName(id int64, name string) (bool, error) {
+	ok, err := db.UpdateSpeakerDisplayName(context.Background(), id, name)
+	if err != nil || !ok {
+		return ok, err
+	}
+	w.diarizer.SetDisplayName(id, name) // nil-safe
+	return true, nil
+}
+
+// RemoveSpeaker deletes a speaker profile from the DB and the live diarizer
+// cache, so that voice re-enrolls fresh on its next utterance.
+func (w *Worker) RemoveSpeaker(id int64) (bool, error) {
+	ok, err := db.DeleteSpeaker(context.Background(), id)
+	if err != nil || !ok {
+		return ok, err
+	}
+	w.diarizer.Remove(id) // nil-safe
+	return true, nil
+}
+
 // SetSessionID sets the active session ID.
 func (w *Worker) SetSessionID(id *int64) {
 	w.mu.Lock()
@@ -474,6 +520,10 @@ func (w *Worker) processTask(task *Task) {
 	w.lastContext[task.UserID] = ctx200
 	w.mu.Unlock()
 
+	// Diarization: the resampled 16k samples are exactly what the embedding
+	// model wants, so identification is free of extra audio work here.
+	speakerID, speakerLabel := w.identifySpeaker(task.UserID, samples)
+
 	// Insert into DB.
 	var nickname *string
 	if task.Nickname != "" {
@@ -486,6 +536,12 @@ func (w *Worker) processTask(task *Task) {
 
 	rms := task.RMS
 	durationMs := task.DurationMs
+	var speakerIDPtr *int64
+	var speakerLabelPtr *string
+	if speakerID != 0 {
+		speakerIDPtr = &speakerID
+		speakerLabelPtr = &speakerLabel
+	}
 
 	dbID, err := db.InsertTranscription(context.Background(), db.InsertTranscriptionParams{
 		SessionID:      *sid,
@@ -497,6 +553,7 @@ func (w *Worker) processTask(task *Task) {
 		RMS:            &rms,
 		DurationMs:     &durationMs,
 		Confidence:     &confidence,
+		SpeakerID:      speakerIDPtr,
 	})
 	if err != nil {
 		log.Printf("Failed to insert transcription: %v", err)
@@ -516,6 +573,8 @@ func (w *Worker) processTask(task *Task) {
 			AudioFilenames: audioFilenames,
 			RMS:            &rms,
 			Confidence:     &confidence,
+			SpeakerID:      speakerIDPtr,
+			SpeakerLabel:   speakerLabelPtr,
 		})
 	}
 }
@@ -532,7 +591,7 @@ func (w *Worker) handleStreamResult(r StreamingResult) {
 		if w.OnPartial != nil {
 			text := strings.TrimSpace(nonASCII.ReplaceAllString(r.Text, ""))
 			if text != "" {
-				w.OnPartial(r.UserID, r.Username, r.Nickname, text)
+				w.OnPartial(r.UserID, r.Username, r.Nickname, text, r.SpeakerLabel)
 			}
 		}
 		return
@@ -558,6 +617,13 @@ func (w *Worker) handleStreamResult(r StreamingResult) {
 	}
 	rms := r.RMS
 	durationMs := r.DurationMs
+	var speakerIDPtr *int64
+	var speakerLabelPtr *string
+	if r.SpeakerID != 0 {
+		sID, sLabel := r.SpeakerID, r.SpeakerLabel
+		speakerIDPtr = &sID
+		speakerLabelPtr = &sLabel
+	}
 
 	dbID, err := db.InsertTranscription(context.Background(), db.InsertTranscriptionParams{
 		SessionID:       *sid,
@@ -568,6 +634,7 @@ func (w *Worker) handleStreamResult(r StreamingResult) {
 		AudioFilenames:  []string{},
 		RMS:             &rms,
 		DurationMs:      &durationMs,
+		SpeakerID:       speakerIDPtr,
 	})
 	if err != nil {
 		log.Printf("Failed to insert streaming transcription: %v", err)
@@ -590,6 +657,8 @@ func (w *Worker) handleStreamResult(r StreamingResult) {
 			AudioFilenames:  []string{},
 			RMS:             &rms,
 			DurationMs:      &durationMs,
+			SpeakerID:       speakerIDPtr,
+			SpeakerLabel:    speakerLabelPtr,
 		})
 	}
 }
@@ -613,12 +682,35 @@ func (w *Worker) finalizeSession(ctx context.Context, sessionID int64) (*string,
 		return nil, nil
 	}
 
-	// Merge consecutive same-speaker lines.
+	// Count distinct diarization speakers per discord user: the speaker
+	// suffix is only worth showing when a user actually has more than one
+	// voice (shared mic) — solo users would just get a noisy "(S1)".
+	speakersPerUser := make(map[string]map[int64]bool)
+	for _, r := range rows {
+		if r.SpeakerID == nil {
+			continue
+		}
+		if speakersPerUser[r.DiscordUserID] == nil {
+			speakersPerUser[r.DiscordUserID] = make(map[int64]bool)
+		}
+		speakersPerUser[r.DiscordUserID][*r.SpeakerID] = true
+	}
+
+	// Merge consecutive same-speaker lines. The merge key includes the
+	// diarization speaker so two people on a shared mic export as distinct
+	// voices ("joe (S2)") instead of collapsing into one paragraph.
 	var merged []mergedLine
 	for _, r := range rows {
 		username := r.DiscordUsername
 		if r.Nickname != nil && *r.Nickname != "" {
 			username = *r.Nickname
+		}
+		if len(speakersPerUser[r.DiscordUserID]) > 1 {
+			if r.SpeakerName != nil && *r.SpeakerName != "" {
+				username = fmt.Sprintf("%s (%s)", username, *r.SpeakerName)
+			} else if r.SpeakerLabel != nil && *r.SpeakerLabel != "" {
+				username = fmt.Sprintf("%s (%s)", username, *r.SpeakerLabel)
+			}
 		}
 		text := strings.TrimRight(r.SpokenText, ".")
 		text = strings.TrimSpace(text)
@@ -691,6 +783,9 @@ func rowToLine(r db.TranscriptionRow) web.TranscriptionLine {
 		RMS:            r.RMS,
 		Confidence:     r.Confidence,
 		DurationMs:     r.DurationMs,
+		SpeakerID:      r.SpeakerID,
+		SpeakerLabel:   r.SpeakerLabel,
+		SpeakerName:    r.SpeakerName,
 	}
 }
 

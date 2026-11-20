@@ -15,6 +15,7 @@
     isContinuation = false,
     nextIsContinuation = false,
     showConfidence = true,
+    speakerBadge = '',
   }: {
     line: TranscriptionLine;
     onEdit: (id: number, text: string) => void;
@@ -29,6 +30,9 @@
     isContinuation?: boolean;
     nextIsContinuation?: boolean;
     showConfidence?: boolean;
+    // Diarization badge text (display name or "S1"); empty hides the badge.
+    // The page decides visibility (only users with >1 detected speaker).
+    speakerBadge?: string;
   } = $props();
 
   // Track whether the user is currently editing (focused on the text span)
@@ -420,7 +424,7 @@
       onmousedown={handleSpeakerMousedown}
       onclick={(e) => { e.preventDefault(); if (!speakerDragOccurred) onSpeakerClick(line.discordUsername); speakerDragOccurred = false; }}
     >
-      {speaker}
+      {speaker}{#if speakerBadge}<span class="speaker-badge">{speakerBadge}</span>{/if}
     </button>
   {/if}
 
@@ -475,6 +479,13 @@
     user-select: none;
   }
   .line-speaker:hover { text-decoration: underline; }
+  /* Diarization badge: which voice on a shared mic said this line. */
+  .speaker-badge {
+    margin-left: 5px; padding: 1px 5px; border-radius: 8px;
+    font-size: 10px; font-weight: 700; vertical-align: 1px;
+    background: color-mix(in srgb, currentColor 18%, transparent);
+    color: inherit;
+  }
   .line-text {
     flex: 1; cursor: text; padding: 0 4px; border-radius: 3px;
     outline: none; min-width: 0;

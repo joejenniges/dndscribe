@@ -12,9 +12,13 @@
 # Runtime
 /logs/
 config.yaml
-hotwords.txt
 
 # Frontend build + deps
 /web/build/
 /web/node_modules/
 /web/.svelte-kit/
+
+# Local
+hotwords.txt
+*.exe~
+.idea/

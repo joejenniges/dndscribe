@@ -428,11 +428,30 @@
       const prev = result[result.length - 1];
       const isContinuation = condensed && prev != null
         && prev.discordUsername === line.discordUsername
-        && prev.nickname === line.nickname;
+        && prev.nickname === line.nickname
+        // Different diarization speakers never merge.
+        && prev.speakerId === line.speakerId;
       result.push({ ...line, isContinuation });
     }
     return result;
   })());
+
+  // Diarization badge shown only for users with >1 detected speaker.
+  const multiSpeakerUsers = $derived((() => {
+    const perUser = new Map<string, Set<number>>();
+    for (const l of allLines) {
+      if (l.speakerId == null) continue;
+      let set = perUser.get(l.discordUsername);
+      if (!set) { set = new Set(); perUser.set(l.discordUsername, set); }
+      set.add(l.speakerId);
+    }
+    return new Set([...perUser.entries()].filter(([, s]) => s.size > 1).map(([u]) => u));
+  })());
+
+  function speakerBadgeFor(line: TLine): string {
+    if (!multiSpeakerUsers.has(line.discordUsername)) return '';
+    return line.speakerName || line.speakerLabel || '';
+  }
 
   onMount(async () => {
     try {
@@ -629,6 +648,7 @@
           onPlayAudio={(fnames) => handlePlayAudio(line.id, fnames, line.nickname || line.discordUsername, speakerColorMap.get(line.discordUsername) ?? '#e94560')}
           isPlaying={playingLineId === line.id}
           speakerColor={speakerColorMap.get(line.discordUsername) ?? ''}
+          speakerBadge={speakerBadgeFor(line)}
           searchHighlight={searchMatchIdSet.has(line.id) ? { regex: parsedSearch.regex, isCurrentMatch: line.id === searchHighlightId } : undefined}
         />
       {/each}

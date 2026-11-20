@@ -15,8 +15,13 @@
 param(
     [string]$Model = "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
     [string]$Punct = "sherpa-onnx-online-punct-en-2024-08-06",
+    # Speaker-embedding model for diarization (shared-mic speaker labels).
+    # Released as a bare .onnx (no archive) under the speaker-recongition-models
+    # tag — yes, the upstream tag really is spelled that way.
+    [string]$SpeakerModel = "wespeaker_en_voxceleb_CAM++.onnx",
     [string]$Dest  = "models",
-    [switch]$SkipPunct
+    [switch]$SkipPunct,
+    [switch]$Speaker
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,6 +54,18 @@ function Fetch-Model {
 Fetch-Model -ReleaseTag "asr-models" -Name $Model -Sentinel "tokens.txt"
 if (-not $SkipPunct) {
     Fetch-Model -ReleaseTag "punctuation-models" -Name $Punct -Sentinel "bpe.vocab"
+}
+if ($Speaker) {
+    $outFile = Join-Path $Dest $SpeakerModel
+    if (Test-Path $outFile) {
+        Write-Host "$SpeakerModel already present — skipping."
+    } else {
+        New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+        $url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/$SpeakerModel"
+        Write-Host "Downloading $url ..."
+        Invoke-WebRequest -Uri $url -OutFile $outFile
+        Write-Host "Ready at $outFile"
+    }
 }
 
 Write-Host "Done."

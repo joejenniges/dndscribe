@@ -82,6 +82,7 @@ func New(cfg *config.Config, worker TranscriptionWorker) (*Bot, error) {
 		guildID:        cfg.Discord.GuildID,
 		config:         cfg,
 		worker:         worker,
+		saveRecordings: cfg.Recordings.SaveRaw,
 		ignoredUsers:   make(map[int64]map[string]bool),
 		characterNames: make(map[int64]map[string]string),
 	}, nil

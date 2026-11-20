@@ -24,6 +24,10 @@ export interface TranscriptionLine {
   rms?: number | null;
   confidence?: number | null;
   durationMs?: number | null;
+  // Diarization (shared-mic): auto label ("S1") and assigned display name.
+  speakerId?: number | null;
+  speakerLabel?: string | null;
+  speakerName?: string | null;
 }
 
 // Partial is a provisional live hypothesis from the streaming engine. It is
@@ -34,6 +38,8 @@ export interface Partial {
   discordUsername: string;
   nickname: string | null;
   text: string;
+  // Diarization label (display name once assigned); "" until identified.
+  speakerLabel?: string;
 }
 
 export interface VoiceChannel {

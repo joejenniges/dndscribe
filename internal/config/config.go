@@ -32,7 +32,37 @@ type TranscribeConfig struct {
 	Model   string `yaml:"model"`  // whisper model name
 	Threads int    `yaml:"threads"`
 
-	Sherpa SherpaConfig `yaml:"sherpa"`
+	Sherpa      SherpaConfig      `yaml:"sherpa"`
+	Diarization DiarizationConfig `yaml:"diarization"`
+}
+
+// DiarizationConfig configures per-utterance speaker identification for the
+// shared-microphone case (two people on one Discord account). Each utterance
+// is embedded with a speaker-verification model and cosine-matched against
+// per-Discord-user profiles persisted in the speakers table; new voices are
+// auto-enrolled up to MaxSpeakers. Engine-independent: runs on whisper flush
+// chunks and sherpa streaming segments alike.
+type DiarizationConfig struct {
+	Enabled bool `yaml:"enabled"`
+
+	// Model is the path to a speaker-embedding onnx file (e.g. models/
+	// wespeaker_en_voxceleb_CAM++.onnx — see download-model.ps1 -Speaker).
+	Model      string `yaml:"model"`
+	Provider   string `yaml:"provider"`
+	NumThreads int    `yaml:"num_threads"`
+
+	// Threshold is the minimum cosine similarity to match an existing speaker
+	// profile; below it a new speaker is enrolled. Default 0.5. Raise if two
+	// people merge into one label; lower if one person splits into several.
+	Threshold float32 `yaml:"threshold"`
+
+	// MaxSpeakers caps auto-enrolled profiles per Discord user; once reached,
+	// the closest existing profile wins regardless of threshold. Default 4.
+	MaxSpeakers int `yaml:"max_speakers"`
+
+	// MinSeconds skips identification for segments shorter than this —
+	// embeddings on very short clips are unreliable. Default 1.0.
+	MinSeconds float64 `yaml:"min_seconds"`
 }
 
 // SherpaConfig configures the streaming sherpa-onnx engine. ModelDir points at
@@ -120,14 +150,40 @@ func Load(path string) (*Config, error) {
 	if cfg.Transcribe.Threads == 0 {
 		cfg.Transcribe.Threads = 4
 	}
-	applySherpaDefaults(&cfg.Transcribe.Sherpa)
+	ApplySherpaDefaults(&cfg.Transcribe.Sherpa)
+	ApplyDiarizationDefaults(&cfg.Transcribe.Diarization)
 	if cfg.Recordings.Dir == "" {
 		cfg.Recordings.Dir = "recordings"
 	}
 	return &cfg, nil
 }
 
-func applySherpaDefaults(s *SherpaConfig) {
+// ApplyDiarizationDefaults fills zero-valued DiarizationConfig fields.
+func ApplyDiarizationDefaults(d *DiarizationConfig) {
+	if d.Model == "" {
+		d.Model = "models/wespeaker_en_voxceleb_CAM++.onnx"
+	}
+	if d.Provider == "" {
+		d.Provider = "cpu"
+	}
+	if d.NumThreads == 0 {
+		d.NumThreads = 1
+	}
+	if d.Threshold == 0 {
+		d.Threshold = 0.5
+	}
+	if d.MaxSpeakers == 0 {
+		d.MaxSpeakers = 4
+	}
+	if d.MinSeconds == 0 {
+		d.MinSeconds = 1.0
+	}
+}
+
+// ApplySherpaDefaults fills zero-valued SherpaConfig fields with defaults.
+// Exported so diagnostic commands (cmd/sherpa-file) get the exact defaults the
+// bot runs with.
+func ApplySherpaDefaults(s *SherpaConfig) {
 	if s.Variant == "" {
 		s.Variant = "int8"
 	}
@@ -143,9 +199,16 @@ func applySherpaDefaults(s *SherpaConfig) {
 	if s.MaxActivePaths == 0 {
 		s.MaxActivePaths = 4
 	}
-	// Endpoint rule defaults match sherpa-onnx upstream defaults.
+	// Rule1 (endpoint when NOTHING has been decoded yet) is raised far above
+	// the upstream 2.4s default: the engine pre-feeds 2.0s of warmup silence
+	// into every fresh stream (cold-start dead-zone fix), which counts toward
+	// rule1's no-token silence. At 2.4s the endpoint fires on the first real
+	// packet after warmup and resets the stream into a fresh dead zone, eating
+	// the start of the utterance. Rule1 is useless for us anyway — the
+	// voice-layer silence flush is the utterance boundary; rule2/rule3 handle
+	// long monologues.
 	if s.Rule1MinTrailingSilence == 0 {
-		s.Rule1MinTrailingSilence = 2.4
+		s.Rule1MinTrailingSilence = 10
 	}
 	if s.Rule2MinTrailingSilence == 0 {
 		s.Rule2MinTrailingSilence = 1.2

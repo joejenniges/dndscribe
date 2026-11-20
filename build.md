@@ -232,3 +232,22 @@ cd web && npm install && npm run build && cd ..
 go build -o dndscribe-go.exe ./cmd/bot
 ./dndscribe-go.exe
 ```
+
+## Functional pipeline tests (e2e)
+
+`internal/e2e` streams the four standard capture WAVs (`internal/e2e/testdata/`)
+through the full pipeline exactly as live audio flows: WAV -> stereo 20ms opus
+packets -> `UserStream` (opus decode, buffer, flush) -> worker/engine ->
+punctuation -> diarization -> Postgres. Assertions are fuzzy keyword matches
+(model accuracy drift won't fail them; dropped words at utterance heads will).
+
+```powershell
+./run-e2e.ps1                # sherpa + whisper variants (~20s total)
+./run-e2e.ps1 -SkipWhisper   # sherpa only (~6s)
+```
+
+Requires: Postgres up (creates + deletes its own campaign), models downloaded
+(`download-model.ps1 -Model sherpa-onnx-streaming-zipformer-en-2023-06-26 -Speaker`,
+plus `recordings/models/ggml-small.bin` for whisper). The tests are gated on
+`DNDSCRIBE_E2E=1` and must run from `bin\` (sherpa DLLs) — the script handles
+both; a plain `go test ./...` skips them instead of crashing.

@@ -129,6 +129,22 @@ func runMigrations(ctx context.Context) error {
 			category_id BIGINT REFERENCES nickname_categories(id) ON DELETE SET NULL,
 			created_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
+
+		// Diarization speaker profiles: one row per distinct voice detected on a
+		// Discord user's audio (shared-mic case). embedding is the running-mean
+		// centroid of that voice's embedding vectors; label is auto-assigned
+		// ("S1", "S2"...); display_name is user-editable (phase-2 UI).
+		`CREATE TABLE IF NOT EXISTS speakers (
+			id BIGSERIAL PRIMARY KEY,
+			campaign_id BIGINT REFERENCES campaigns(id),
+			discord_user_id TEXT NOT NULL,
+			label TEXT NOT NULL,
+			display_name TEXT,
+			embedding REAL[] NOT NULL,
+			sample_count INT NOT NULL DEFAULT 1,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW()
+		)`,
 	}
 
 	for _, ddl := range tables {
@@ -187,12 +203,21 @@ func runMigrations(ctx context.Context) error {
 		`ALTER TABLE transcriptions ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ`,
 		`ALTER TABLE ignored_users ADD COLUMN IF NOT EXISTS campaign_id BIGINT`,
 		`ALTER TABLE character_names ADD COLUMN IF NOT EXISTS campaign_id BIGINT`,
+		`ALTER TABLE transcriptions ADD COLUMN IF NOT EXISTS speaker_id BIGINT`,
 	}
 
 	for _, alter := range alterMigrations {
 		if _, err := pool.Exec(ctx, alter); err != nil {
 			return fmt.Errorf("alter table: %w", err)
 		}
+	}
+
+	_, err = pool.Exec(ctx, `
+		CREATE INDEX IF NOT EXISTS speakers_campaign_user
+		ON speakers (campaign_id, discord_user_id)
+	`)
+	if err != nil {
+		return fmt.Errorf("create speakers index: %w", err)
 	}
 
 	// Seed default campaign

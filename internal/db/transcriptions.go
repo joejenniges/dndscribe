@@ -28,6 +28,9 @@ type TranscriptionRow struct {
 	DurationMs      *int       `json:"durationMs"`
 	Confidence      *float32   `json:"confidence"`
 	EditedAt        *time.Time `json:"editedAt"`
+	SpeakerID       *int64     `json:"speakerId"`
+	SpeakerLabel    *string    `json:"speakerLabel"`
+	SpeakerName     *string    `json:"speakerName"`
 }
 
 type InsertTranscriptionParams struct {
@@ -40,17 +43,19 @@ type InsertTranscriptionParams struct {
 	RMS             *float32
 	DurationMs      *int
 	Confidence      *float32
+	SpeakerID       *int64
 }
 
 func InsertTranscription(ctx context.Context, params InsertTranscriptionParams) (int64, error) {
 	var id int64
 	err := pool.QueryRow(ctx,
 		`INSERT INTO transcriptions (session_id, discord_user_id, discord_username, nickname,
-		                             spoken_text, audio_filenames, rms, duration_ms, confidence)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		                             spoken_text, audio_filenames, rms, duration_ms, confidence, speaker_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		 RETURNING id`,
 		params.SessionID, params.DiscordUserID, params.DiscordUsername, params.Nickname,
-		params.SpokenText, params.AudioFilenames, params.RMS, params.DurationMs, params.Confidence).
+		params.SpokenText, params.AudioFilenames, params.RMS, params.DurationMs, params.Confidence,
+		params.SpeakerID).
 		Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("insert transcription: %w", err)
@@ -58,19 +63,28 @@ func InsertTranscription(ctx context.Context, params InsertTranscriptionParams) 
 	return id, nil
 }
 
+// transcriptionCols is the shared SELECT column list; every transcription
+// query aliases the table as t and LEFT JOINs speakers sp so rows carry the
+// diarization label/name without a second round trip.
+const transcriptionCols = `t.id, t.session_id, t.created_at, t.discord_user_id, t.discord_username,
+	t.nickname, t.spoken_text, t.audio_filenames, t.rms, t.duration_ms, t.confidence, t.edited_at,
+	t.speaker_id, sp.label, sp.display_name`
+
+const speakerJoin = ` LEFT JOIN speakers sp ON sp.id = t.speaker_id`
+
 func GetTranscriptionsBySession(ctx context.Context, sessionID int64) ([]TranscriptionRow, error) {
 	return queryTranscriptions(ctx,
-		`SELECT id, session_id, created_at, discord_user_id, discord_username, nickname,
-		        spoken_text, audio_filenames, rms, duration_ms, confidence, edited_at
-		 FROM transcriptions WHERE session_id = $1
-		 ORDER BY created_at ASC`, sessionID)
+		`SELECT `+transcriptionCols+`
+		 FROM transcriptions t`+speakerJoin+`
+		 WHERE t.session_id = $1
+		 ORDER BY t.created_at ASC`, sessionID)
 }
 
 func GetTranscriptionByID(ctx context.Context, id int64) (*TranscriptionRow, error) {
 	rows, err := queryTranscriptions(ctx,
-		`SELECT id, session_id, created_at, discord_user_id, discord_username, nickname,
-		        spoken_text, audio_filenames, rms, duration_ms, confidence, edited_at
-		 FROM transcriptions WHERE id = $1`, id)
+		`SELECT `+transcriptionCols+`
+		 FROM transcriptions t`+speakerJoin+`
+		 WHERE t.id = $1`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -136,9 +150,8 @@ func SearchTranscriptions(ctx context.Context, campaignID int64, query string, l
 		limit = 50
 	}
 	return queryTranscriptions(ctx,
-		`SELECT t.id, t.session_id, t.created_at, t.discord_user_id, t.discord_username,
-		        t.nickname, t.spoken_text, t.audio_filenames, t.rms, t.duration_ms, t.confidence, t.edited_at
-		 FROM transcriptions t
+		`SELECT `+transcriptionCols+`
+		 FROM transcriptions t`+speakerJoin+`
 		 JOIN sessions s ON s.id = t.session_id
 		 WHERE s.campaign_id = $1 AND t.spoken_text ILIKE '%' || $2 || '%'
 		 ORDER BY t.created_at DESC
@@ -148,11 +161,10 @@ func SearchTranscriptions(ctx context.Context, campaignID int64, query string, l
 
 func GetLastTranscriptionForUser(ctx context.Context, sessionID int64, discordUserID string) (*TranscriptionRow, error) {
 	rows, err := queryTranscriptions(ctx,
-		`SELECT id, session_id, created_at, discord_user_id, discord_username, nickname,
-		        spoken_text, audio_filenames, rms, duration_ms, confidence, edited_at
-		 FROM transcriptions
-		 WHERE session_id = $1 AND discord_user_id = $2
-		 ORDER BY created_at DESC LIMIT 1`,
+		`SELECT `+transcriptionCols+`
+		 FROM transcriptions t`+speakerJoin+`
+		 WHERE t.session_id = $1 AND t.discord_user_id = $2
+		 ORDER BY t.created_at DESC LIMIT 1`,
 		sessionID, discordUserID)
 	if err != nil {
 		return nil, err
@@ -212,7 +224,7 @@ func queryTranscriptions(ctx context.Context, query string, args ...any) ([]Tran
 		if err := rows.Scan(
 			&t.ID, &t.SessionID, &t.CreatedAt, &t.DiscordUserID, &t.DiscordUsername,
 			&t.Nickname, &t.SpokenText, &t.AudioFilenames, &t.RMS, &t.DurationMs,
-			&t.Confidence, &t.EditedAt,
+			&t.Confidence, &t.EditedAt, &t.SpeakerID, &t.SpeakerLabel, &t.SpeakerName,
 		); err != nil {
 			return nil, fmt.Errorf("scan transcription: %w", err)
 		}

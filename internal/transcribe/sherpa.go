@@ -20,6 +20,32 @@ var _ StreamingEngine = (*SherpaEngine)(nil)
 // recognizerSampleRate is what the streaming Zipformer models expect.
 const recognizerSampleRate = 16000
 
+// Silence padding fed around each utterance. Discord only transmits packets
+// while a user is actually speaking, so without padding a stream sees a hard
+// speech onset with no left context and end-of-input right after the last
+// word. Observed live: the encoder mis-decodes or drops the first ~1s of each
+// turn ("does it catch the words" came out as "S,"). Warmup gives the encoder
+// the silent left context a continuous mic feed would naturally have; tail
+// padding gives it right context to finish decoding the last words before
+// InputFinished (sherpa's own examples pad ~0.3-0.8s the same way).
+// Warmup length: the en-20M zipformer has a ~1.5s cold-start dead zone
+// (verified by slicing a live capture at arbitrary offsets — the first ~1.5s
+// after ANY hard onset decodes to nothing, independent of content or level).
+// 2.0s covers it with margin. It must stay BELOW rule1_min_trailing_silence:
+// warmup counts as "trailing silence with nothing decoded", and if it alone
+// exceeds rule1 the endpoint fires on the first real Feed, resetting the
+// stream into a fresh dead zone mid-speech (cascading loss).
+var (
+	warmupSilence = make([]float32, recognizerSampleRate*2)  // 2.0s
+	tailSilence   = make([]float32, recognizerSampleRate/2)  // 0.5s
+)
+
+// partialPunctInterval throttles punctuation of live partials per stream.
+// Reference embedded stacks (Microsoft Speech SDK, itn-mode=2) re-run
+// punctuation on partials so intermediate text already reads clean; the model
+// call is a few ms, so ~3/sec/speaker keeps that UX at negligible CPU cost.
+const partialPunctInterval = 300 * time.Millisecond
+
 // SherpaEngine is a streaming speech-to-text engine backed by sherpa-onnx's
 // online recognizer. One recognizer is shared across all users; each user gets
 // a lazily-created OnlineStream fed continuously, producing partial hypotheses
@@ -34,6 +60,11 @@ type SherpaEngine struct {
 	// completed sentences as their own lines (sentence-aware long-turn break).
 	punct   *Punctuator
 	softCap time.Duration
+
+	// identify, when set, resolves which voice on a shared mic is speaking:
+	// it receives the segment's 16kHz audio and returns (speakerID, label).
+	// Called once per segment (~2s in, or at finalize for short segments).
+	identify func(userID string, samples16k []float32) (int64, string)
 
 	// recMu serializes calls into the shared recognizer. sherpa/onnxruntime can
 	// decode concurrent streams, but serializing keeps v1 unambiguously correct
@@ -65,6 +96,7 @@ type sherpaStream struct {
 	turnStart         time.Time // start of current turn (since last full reset)
 	committedWords    int       // words of the turn already emitted as lines
 	lastSentenceCheck time.Time // throttle for the long-turn punctuation check
+	lastPartialPunct  time.Time // throttle for punctuating live partials
 
 	// Per-segment audio accounting (a segment = audio since the last committed
 	// line) for that line's RMS + duration. Reset on every commit, mid-turn or
@@ -72,7 +104,18 @@ type sherpaStream struct {
 	segStart  time.Time
 	segSamples int
 	segSumSq   float64
+
+	// Per-segment 16kHz audio retained for speaker identification. Capped at
+	// segAudioCap; the soft-cap sentence splitter keeps segments ~12s anyway.
+	segAudio     []float32
+	speakerID    int64
+	speakerLabel string
+	speakerTried bool // identification attempted for this segment
 }
+
+// segAudioCap bounds retained per-segment audio: 30s at 16kHz (~1.9MB/speaker
+// worst case). Diarization embeddings saturate well before this.
+const segAudioCap = 30 * recognizerSampleRate
 
 // NewSherpaEngine resolves model files from cfg, loads the online recognizer,
 // and returns a ready engine. punct may be nil (raw caps output). Call
@@ -127,6 +170,12 @@ func NewSherpaEngine(cfg *config.SherpaConfig, punct *Punctuator) (*SherpaEngine
 
 func (e *SherpaEngine) SetCallback(fn func(StreamingResult)) { e.callback = fn }
 
+// SetIdentify registers the speaker-identification callback (diarization).
+// Call once at wiring time before any Feed; nil leaves diarization off.
+func (e *SherpaEngine) SetIdentify(fn func(userID string, samples16k []float32) (int64, string)) {
+	e.identify = fn
+}
+
 // Feed downmixes-already (mono48k), resamples to 16k, decodes, and emits a
 // partial when the rolling hypothesis text changes. If endpoint detection is
 // enabled and fires, it commits a final and resets the user's stream.
@@ -156,6 +205,9 @@ func (e *SherpaEngine) Feed(userID, username, nickname string, mono48k []int16) 
 	if len(samples16) == 0 {
 		return
 	}
+	if e.identify != nil && len(s.segAudio) < segAudioCap {
+		s.segAudio = append(s.segAudio, samples16...)
+	}
 
 	e.recMu.Lock()
 	s.stream.AcceptWaveform(recognizerSampleRate, samples16)
@@ -166,13 +218,36 @@ func (e *SherpaEngine) Feed(userID, username, nickname string, mono48k []int16) 
 	endpoint := e.endpointOn && e.recognizer.IsEndpoint(s.stream)
 	e.recMu.Unlock()
 
-	// Emit the uncommitted tail as a lowercased partial (cheap — no punctuation
-	// per partial; full truecasing happens on commit). Lowercasing is a free
-	// readability win over the model's ALL-CAPS output.
+	// Speaker identification once per segment, ~2s in: enough audio for a
+	// reliable embedding, early enough that live partials show who's talking.
+	// Short segments that never reach 2s get a second chance at finalize.
+	if e.identify != nil && !s.speakerTried && len(s.segAudio) >= 2*recognizerSampleRate {
+		s.speakerTried = true
+		s.speakerID, s.speakerLabel = e.identify(userID, s.segAudio)
+	}
+
+	// Emit the uncommitted tail as a partial. With a punctuator, partials are
+	// punctuated+truecased too so live text reads clean, throttled per stream
+	// (partialPunctInterval). Between punctuation windows we skip the emit
+	// entirely rather than flash raw lowercase text that the next punctuated
+	// partial would immediately restyle — the next in-window change carries
+	// the words.
 	tail := uncommittedTail(raw, s.committedWords)
-	if partial := strings.ToLower(tail); partial != "" && partial != s.lastPartial {
-		s.lastPartial = partial
-		e.emit(StreamingResult{UserID: userID, Username: username, Nickname: nickname, Text: partial})
+	if tail != "" {
+		var partial string
+		if e.punct == nil {
+			// No punctuator: lowercased raw is still a readability win over
+			// the model's ALL-CAPS output.
+			partial = strings.ToLower(tail)
+		} else if now.Sub(s.lastPartialPunct) >= partialPunctInterval {
+			s.lastPartialPunct = now
+			partial = e.punct.Punctuate(strings.ToLower(tail))
+		}
+		if partial != "" && partial != s.lastPartial {
+			s.lastPartial = partial
+			e.emit(StreamingResult{UserID: userID, Username: username, Nickname: nickname, Text: partial,
+				SpeakerID: s.speakerID, SpeakerLabel: s.speakerLabel})
+		}
 	}
 
 	if endpoint {
@@ -213,11 +288,16 @@ func (e *SherpaEngine) Flush(userID string) {
 func (e *SherpaEngine) finalizeLocked(userID string, s *sherpaStream, drain bool) {
 	e.recMu.Lock()
 	if drain {
-		// Push the resampler tail and signal end-of-input so the encoder flushes
-		// its last chunk, then drain the decoder.
+		// Push the resampler tail, pad with trailing silence so the encoder has
+		// right context for the last words, and signal end-of-input so the final
+		// chunk is decoded.
 		if tail := s.resampler.Drain(); len(tail) > 0 {
 			s.stream.AcceptWaveform(recognizerSampleRate, tail)
+			if e.identify != nil && len(s.segAudio) < segAudioCap {
+				s.segAudio = append(s.segAudio, tail...)
+			}
 		}
+		s.stream.AcceptWaveform(recognizerSampleRate, tailSilence)
 		s.stream.InputFinished()
 	}
 	for e.recognizer.IsReady(s.stream) {
@@ -226,11 +306,17 @@ func (e *SherpaEngine) finalizeLocked(userID string, s *sherpaStream, drain bool
 	raw := strings.TrimSpace(e.recognizer.GetResult(s.stream).Text)
 	if drain {
 		// Recreate the stream: after InputFinished a stream can't take more
-		// audio, so swap in a fresh one for the next turn.
+		// audio, so swap in a fresh (pre-warmed) one for the next turn.
 		sherpa.DeleteOnlineStream(s.stream)
-		s.stream = sherpa.NewOnlineStream(e.recognizer)
+		s.stream = e.newWarmStreamLocked()
 	} else {
 		e.recognizer.Reset(s.stream)
+		// Re-warm after Reset for the same left-context reason as a fresh
+		// stream; decoded now (during silence) so speech onset pays nothing.
+		s.stream.AcceptWaveform(recognizerSampleRate, warmupSilence)
+		for e.recognizer.IsReady(s.stream) {
+			e.recognizer.Decode(s.stream)
+		}
 	}
 	e.recMu.Unlock()
 
@@ -246,6 +332,15 @@ func (e *SherpaEngine) finalizeLocked(userID string, s *sherpaStream, drain bool
 	rms, durationMs := segMetrics(s)
 	ts := s.segStart
 
+	// Segments too short to hit the ~2s in-Feed identification get one attempt
+	// here with whatever audio the segment has (the diarizer skips anything
+	// under its min-duration floor).
+	if e.identify != nil && !s.speakerTried && len(s.segAudio) > 0 {
+		s.speakerTried = true
+		s.speakerID, s.speakerLabel = e.identify(userID, s.segAudio)
+	}
+	speakerID, speakerLabel := s.speakerID, s.speakerLabel
+
 	// Full turn reset.
 	s.resampler.Reset()
 	s.lastPartial = ""
@@ -255,20 +350,32 @@ func (e *SherpaEngine) finalizeLocked(userID string, s *sherpaStream, drain bool
 	s.segSamples = 0
 	s.segSumSq = 0
 	s.lastSentenceCheck = time.Time{}
+	s.resetSegmentSpeaker()
 
 	if strings.TrimSpace(text) == "" {
 		return
 	}
 	e.emit(StreamingResult{
-		UserID:     userID,
-		Username:   s.username,
-		Nickname:   s.nickname,
-		Text:       text,
-		IsFinal:    true,
-		Timestamp:  ts,
-		RMS:        rms,
-		DurationMs: durationMs,
+		UserID:       userID,
+		Username:     s.username,
+		Nickname:     s.nickname,
+		Text:         text,
+		IsFinal:      true,
+		Timestamp:    ts,
+		RMS:          rms,
+		DurationMs:   durationMs,
+		SpeakerID:    speakerID,
+		SpeakerLabel: speakerLabel,
 	})
+}
+
+// resetSegmentSpeaker clears per-segment diarization state so the next
+// segment re-identifies (voices can swap between lines on a shared mic).
+func (s *sherpaStream) resetSegmentSpeaker() {
+	s.segAudio = s.segAudio[:0]
+	s.speakerID = 0
+	s.speakerLabel = ""
+	s.speakerTried = false
 }
 
 // commitSentencesLocked punctuates the uncommitted tail and, if it contains any
@@ -299,6 +406,7 @@ func (e *SherpaEngine) commitSentencesLocked(userID string, s *sherpaStream, raw
 
 	rms, durationMs := segMetrics(s)
 	ts := s.segStart
+	speakerID, speakerLabel := s.speakerID, s.speakerLabel
 
 	s.committedWords += n
 	// Start a fresh segment for the next line; turn + recognizer continue.
@@ -306,16 +414,19 @@ func (e *SherpaEngine) commitSentencesLocked(userID string, s *sherpaStream, raw
 	s.segSamples = 0
 	s.segSumSq = 0
 	s.lastPartial = ""
+	s.resetSegmentSpeaker()
 
 	e.emit(StreamingResult{
-		UserID:     userID,
-		Username:   s.username,
-		Nickname:   s.nickname,
-		Text:       committed,
-		IsFinal:    true,
-		Timestamp:  ts,
-		RMS:        rms,
-		DurationMs: durationMs,
+		UserID:       userID,
+		Username:     s.username,
+		Nickname:     s.nickname,
+		Text:         committed,
+		IsFinal:      true,
+		Timestamp:    ts,
+		RMS:          rms,
+		DurationMs:   durationMs,
+		SpeakerID:    speakerID,
+		SpeakerLabel: speakerLabel,
 	})
 }
 
@@ -373,12 +484,27 @@ func (e *SherpaEngine) getOrCreate(userID string) *sherpaStream {
 	if s, ok := e.streams[userID]; ok {
 		return s
 	}
+	e.recMu.Lock()
+	st := e.newWarmStreamLocked()
+	e.recMu.Unlock()
 	s := &sherpaStream{
-		stream:    sherpa.NewOnlineStream(e.recognizer),
+		stream:    st,
 		resampler: NewStreamResampler(),
 	}
 	e.streams[userID] = s
 	return s
+}
+
+// newWarmStreamLocked creates an OnlineStream pre-fed with warmup silence and
+// decodes it immediately, so the padding cost is paid at creation time (during
+// silence) rather than at the next speech onset. Caller must hold recMu.
+func (e *SherpaEngine) newWarmStreamLocked() *sherpa.OnlineStream {
+	st := sherpa.NewOnlineStream(e.recognizer)
+	st.AcceptWaveform(recognizerSampleRate, warmupSilence)
+	for e.recognizer.IsReady(st) {
+		e.recognizer.Decode(st)
+	}
+	return st
 }
 
 // Close frees all per-user streams and the recognizer.

@@ -14,16 +14,24 @@ transcribe:
   threads: 4           # whisper CPU threads
 
   # Streaming engine (sherpa-onnx). Only used when engine: "sherpa".
-  # Download a model first: ./download-model.ps1
+  # Download a model first:
+  #   ./download-model.ps1 -Model sherpa-onnx-streaming-zipformer-en-2023-06-26
+  # Use en-2023-06-26, NOT the small en-20M model: the 20M model silently drops
+  # the leading words of conversational speech (transducer blank collapse on
+  # fast/slurred onsets) — verified against live Discord captures. Keep
+  # greedy_search: modified_beam_search tested WORSE on Discord audio
+  # (endpoint churn, garbled finals).
   sherpa:
-    model_dir: "models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17"
+    model_dir: "models/sherpa-onnx-streaming-zipformer-en-2023-06-26"
     variant: "int8"            # int8 (smaller/faster, default) | fp32
     # model_type: ""           # leave empty for auto-detect; do NOT hardcode zipformer2
     provider: "cpu"
     num_threads: 2
     decoding_method: "greedy_search"   # or modified_beam_search
     enable_endpoint: true              # commit finals on trailing silence
-    rule1_min_trailing_silence: 2.4
+    # rule1 default is 10 (not sherpa's 2.4): the engine pre-feeds 2s of warmup
+    # silence per stream, and rule1 <= warmup+onset resets the stream mid-speech.
+    rule1_min_trailing_silence: 10
     rule2_min_trailing_silence: 1.2
     rule3_min_utterance_length: 30     # hard backstop; sentence break is primary
     soft_cap_seconds: 12               # past this, a long turn breaks at the next sentence
@@ -39,6 +47,19 @@ transcribe:
     # decoder: "models/.../decoder-...onnx"
     # joiner:  "models/.../joiner-...onnx"
     # tokens:  "models/.../tokens.txt"
+
+  # Speaker diarization for shared microphones (two people on one Discord
+  # account). Utterances are voice-embedded and matched against per-user
+  # speaker profiles (speakers table); new voices auto-enroll as "S1", "S2"...
+  # Names are assignable via PUT /api/speakers/:id (UI in phase 2).
+  # Model: ./download-model.ps1 -Speaker (fetches wespeaker CAM++ en, ~28MB).
+  # Works with BOTH engines (whisper and sherpa).
+  diarization:
+    enabled: false
+    model: "models/wespeaker_en_voxceleb_CAM++.onnx"
+    threshold: 0.5      # cosine match floor; raise if two people merge, lower if one splits
+    max_speakers: 4     # per discord user
+    min_seconds: 1.0    # skip segments shorter than this
 
 recordings:
   dir: "recordings"

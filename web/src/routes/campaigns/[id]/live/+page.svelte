@@ -454,6 +454,25 @@
     })
   );
 
+  // Users with more than one diarization speaker detected (shared mic): only
+  // then is the speaker badge worth showing — solo users would just get a
+  // noisy constant "S1".
+  const multiSpeakerUsers = $derived((() => {
+    const perUser = new Map<string, Set<number>>();
+    for (const l of $lines) {
+      if (l.speakerId == null) continue;
+      let set = perUser.get(l.discordUsername);
+      if (!set) { set = new Set(); perUser.set(l.discordUsername, set); }
+      set.add(l.speakerId);
+    }
+    return new Set([...perUser.entries()].filter(([, s]) => s.size > 1).map(([u]) => u));
+  })());
+
+  function speakerBadgeFor(line: { discordUsername: string; speakerName?: string | null; speakerLabel?: string | null }): string {
+    if (!multiSpeakerUsers.has(line.discordUsername)) return '';
+    return line.speakerName || line.speakerLabel || '';
+  }
+
   // Mark consecutive same-speaker lines as continuations (for condensed view)
   // Also mark if a line is followed by a continuation (to remove its bottom border)
   const displayLines = $derived((() => {
@@ -462,7 +481,9 @@
       const prev = result[result.length - 1];
       const isContinuation = condensed && prev != null
         && prev.discordUsername === line.discordUsername
-        && prev.nickname === line.nickname;
+        && prev.nickname === line.nickname
+        // Different diarization speakers never merge — that's the whole point.
+        && prev.speakerId === line.speakerId;
       result.push({ ...line, isContinuation, nextIsContinuation: false });
       // Mark previous line as followed by continuation
       if (isContinuation && prev) {
@@ -759,6 +780,7 @@
               onPlayAudio={(fnames) => { try { handlePlayAudio(line.id, fnames, line.nickname || line.discordUsername, speakerColorMap.get(line.discordUsername) ?? '#e94560'); } catch(e) { console.error('PLAY ERROR:', e); } }}
               isPlaying={playingLineId === line.id}
               speakerColor={speakerColorMap.get(line.discordUsername) ?? ''}
+              speakerBadge={speakerBadgeFor(line)}
               searchHighlight={searchMatchIdSet.has(line.id) ? { regex: parsedSearch.regex, isCurrentMatch: line.id === searchHighlightId } : undefined}
             />
           {/each}
@@ -771,7 +793,7 @@
         {#each partialList as p (p.userId)}
           <div class="partial-line">
             <span class="partial-speaker" style:color={speakerColorMap.get(p.discordUsername) ?? '#8a8a99'}>
-              {p.nickname || p.discordUsername}
+              {p.nickname || p.discordUsername}{#if p.speakerLabel && multiSpeakerUsers.has(p.discordUsername)}<span class="partial-badge">{p.speakerLabel}</span>{/if}
             </span>
             <span class="partial-text">{p.text}</span>
           </div>
@@ -874,6 +896,11 @@
     animation: partial-pulse 1.6s ease-in-out infinite;
   }
   .partial-speaker { font-weight: 600; font-size: 13px; white-space: nowrap; }
+  .partial-badge {
+    margin-left: 5px; padding: 1px 5px; border-radius: 8px;
+    font-size: 10px; font-weight: 700; font-style: normal;
+    background: color-mix(in srgb, currentColor 18%, transparent);
+  }
   .partial-text { color: var(--text-secondary); font-size: 14px; }
   @keyframes partial-pulse { 0%, 100% { opacity: 0.65; } 50% { opacity: 0.4; } }
 

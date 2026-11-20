@@ -36,6 +36,13 @@ type StreamingResult struct {
 	// by the engine from the audio it was fed). Zero on partials.
 	RMS        float32
 	DurationMs int
+
+	// SpeakerID/SpeakerLabel identify which voice on a shared microphone is
+	// speaking (diarization). Zero/empty when diarization is off, the segment
+	// was too short to identify, or identification hasn't happened yet (early
+	// partials).
+	SpeakerID    int64
+	SpeakerLabel string
 }
 
 // StreamingEngine is the interface for streaming-native speech-to-text backends

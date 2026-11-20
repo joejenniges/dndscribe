@@ -100,6 +100,10 @@ type UserStream struct {
 	// DAVE state for this user.
 	daveState  *discordgo.ReceiverState
 	daveActive bool
+	// directOpus (tests only): treat every packet as raw unencrypted opus,
+	// bypassing DAVE framing entirely. Production Discord audio is always
+	// DAVE-framed; functional tests synthesize plain opus packets.
+	directOpus bool
 
 	// Save raw recordings.
 	saveRaw    bool
@@ -423,7 +427,10 @@ func (s *UserStream) processPacket(opusData []byte, timestamp uint32, seq uint16
 
 	// DAVE decryption.
 	daveFrame, isDave := findDAVEFrame(opusData)
-	if isDave {
+	if s.directOpus {
+		// Test mode: packets are raw opus; skip all DAVE gating (including
+		// accidental 0xFAFA trailer matches in compressed payloads).
+	} else if isDave {
 		if s.daveState == nil {
 			return
 		}
@@ -464,7 +471,7 @@ func (s *UserStream) processPacket(opusData []byte, timestamp uint32, seq uint16
 	// under our stale key produces random bytes that opus decodes as
 	// full-scale noise. RMS > 12000 reliably indicates this; re-derive the
 	// key and retry. If the retry is also garbage, discard the frame.
-	if isDave && isGarbageAmplitude(pcm) {
+	if isDave && !s.directOpus && isGarbageAmplitude(pcm) {
 		if retryPCM, ok := s.retryWithRederivedKey(daveFrame); ok {
 			pcm = retryPCM
 		} else {
@@ -472,6 +479,14 @@ func (s *UserStream) processPacket(opusData []byte, timestamp uint32, seq uint16
 		}
 	}
 
+	// Log transmission gaps: Discord clients stop sending during silence, so a
+	// gap is normal — but the gap length tells us when the client resumed
+	// transmitting, which is the ground truth for diagnosing "start of my
+	// sentence is missing" reports (client VAD onset clipping / join handshake
+	// loss happen upstream of the bot and leave no other trace).
+	if gap := time.Since(s.lastPacket); gap > time.Second {
+		log.Printf("Stream %s: packets resumed after %.1fs gap", s.userID, gap.Seconds())
+	}
 	s.lastPacket = time.Now()
 
 	// Track last time we saw real speech (vs DTX comfort noise). Used by

@@ -39,7 +39,7 @@ func TestSherpaEngineEndToEnd(t *testing.T) {
 		NumThreads:              1,
 		DecodingMethod:          "greedy_search",
 		MaxActivePaths:          4,
-		Rule1MinTrailingSilence: 2.4,
+		Rule1MinTrailingSilence: 10,
 		Rule2MinTrailingSilence: 1.2,
 		Rule3MinUtteranceLength: 20,
 	}
@@ -116,7 +116,7 @@ func TestSherpaEnginePunctuatedFinal(t *testing.T) {
 	cfg := &config.SherpaConfig{
 		ModelDir: asrDir, Variant: "int8", Provider: "cpu", NumThreads: 1,
 		DecodingMethod: "greedy_search", MaxActivePaths: 4,
-		Rule1MinTrailingSilence: 2.4, Rule2MinTrailingSilence: 1.2, Rule3MinUtteranceLength: 30,
+		Rule1MinTrailingSilence: 10, Rule2MinTrailingSilence: 1.2, Rule3MinUtteranceLength: 30,
 		SoftCapSeconds: 12,
 	}
 	eng, err := NewSherpaEngine(cfg, punct)

@@ -48,6 +48,11 @@ type TranscriptionWorker interface {
 	GetSessionID() *int64
 	GetCampaignID() *int64
 	SetCampaignID(id *int64)
+	// UpdateSpeakerName persists a diarization speaker's display name and
+	// refreshes the live diarizer cache so new lines pick it up immediately.
+	UpdateSpeakerName(id int64, name string) (bool, error)
+	// RemoveSpeaker deletes a speaker profile (DB + live diarizer cache).
+	RemoveSpeaker(id int64) (bool, error)
 }
 
 // --- Types ---
@@ -82,6 +87,12 @@ type TranscriptionLine struct {
 	RMS            *float32 `json:"rms,omitempty"`
 	Confidence     *float32 `json:"confidence,omitempty"`
 	DurationMs     *int     `json:"durationMs,omitempty"`
+	// Diarization: which voice on a shared microphone spoke this line.
+	// SpeakerLabel is the auto-assigned "S1"/"S2"; SpeakerName the
+	// human-assigned display name (phase-2 UI, PUT /api/speakers/:id).
+	SpeakerID    *int64  `json:"speakerId,omitempty"`
+	SpeakerLabel *string `json:"speakerLabel,omitempty"`
+	SpeakerName  *string `json:"speakerName,omitempty"`
 }
 
 // --- Helpers ---
@@ -127,6 +138,8 @@ var (
 	reCategories         = regexp.MustCompile(`^/api/campaigns/(\d+)/categories$`)
 	reCategoryByID       = regexp.MustCompile(`^/api/campaigns/(\d+)/categories/(\d+)$`)
 	reIgnoredUsers       = regexp.MustCompile(`^/api/campaigns/(\d+)/ignored-users$`)
+	reSpeakers           = regexp.MustCompile(`^/api/campaigns/(\d+)/speakers$`)
+	reSpeakerByID        = regexp.MustCompile(`^/api/campaigns/(\d+)/speakers/(\d+)$`)
 	reStatus             = regexp.MustCompile(`^/api/status$`)
 	reChannels           = regexp.MustCompile(`^/api/channels$`)
 	reJoin               = regexp.MustCompile(`^/api/join$`)
@@ -285,6 +298,25 @@ func (a *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
+		return
+	}
+
+	if m := reSpeakerByID.FindStringSubmatch(path); m != nil {
+		sid, _ := parseID(m[2])
+		switch method {
+		case http.MethodPut:
+			a.updateSpeaker(w, r, sid)
+		case http.MethodDelete:
+			a.deleteSpeaker(w, r, ctx, sid)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	if m := reSpeakers.FindStringSubmatch(path); m != nil && method == http.MethodGet {
+		cid, _ := parseID(m[1])
+		a.listSpeakers(w, r, ctx, cid)
 		return
 	}
 
@@ -1175,3 +1207,65 @@ func (a *APIHandler) unignoreUser(w http.ResponseWriter, r *http.Request, campai
 
 // Ensure unused imports don't cause errors
 var _ = fmt.Sprintf
+
+// --- Diarization speakers ---
+
+// listSpeakers returns the diarization speaker profiles for a campaign
+// (embeddings excluded — see SpeakerRow json tags).
+func (a *APIHandler) listSpeakers(w http.ResponseWriter, _ *http.Request, ctx context.Context, campaignID int64) {
+	speakers, err := db.GetSpeakersByCampaign(ctx, campaignID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if speakers == nil {
+		speakers = []db.SpeakerRow{}
+	}
+	jsonResponse(w, http.StatusOK, speakers)
+}
+
+// updateSpeaker sets a speaker's display name (phase-2 UI backend). Empty
+// displayName clears it back to the auto label.
+func (a *APIHandler) updateSpeaker(w http.ResponseWriter, r *http.Request, speakerID int64) {
+	var body struct {
+		DisplayName string `json:"displayName"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if a.tw == nil {
+		jsonError(w, http.StatusServiceUnavailable, "transcription worker not ready")
+		return
+	}
+	ok, err := a.tw.UpdateSpeakerName(speakerID, body.DisplayName)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		jsonError(w, http.StatusNotFound, "speaker not found")
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]bool{"updated": true})
+}
+
+// deleteSpeaker removes a speaker profile so its voice re-enrolls fresh.
+// Existing transcription lines keep their speaker_id; the label just stops
+// resolving (rendered as no badge).
+func (a *APIHandler) deleteSpeaker(w http.ResponseWriter, _ *http.Request, _ context.Context, speakerID int64) {
+	if a.tw == nil {
+		jsonError(w, http.StatusServiceUnavailable, "transcription worker not ready")
+		return
+	}
+	ok, err := a.tw.RemoveSpeaker(speakerID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		jsonError(w, http.StatusNotFound, "speaker not found")
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]bool{"deleted": true})
+}

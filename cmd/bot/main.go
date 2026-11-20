@@ -119,7 +119,7 @@ func main() {
 	// Streaming engine partials: ephemeral live hypotheses, not persisted. The
 	// frontend renders these per-speaker and supersedes them when the final
 	// "line" arrives. No-op when running the batch (whisper) engine.
-	worker.OnPartial = func(userID, username, nickname, text string) {
+	worker.OnPartial = func(userID, username, nickname, text, speakerLabel string) {
 		cid := worker.GetCampaignID()
 		hub.Broadcast(map[string]interface{}{
 			"type": "partial",
@@ -128,6 +128,7 @@ func main() {
 				"discordUsername": username,
 				"nickname":        nickname,
 				"text":            text,
+				"speakerLabel":    speakerLabel,
 			},
 		}, cid)
 	}

@@ -74,7 +74,7 @@ func main() {
 		},
 		DecodingMethod:          "greedy_search",
 		EnableEndpoint:          1,
-		Rule1MinTrailingSilence: 2.4,
+		Rule1MinTrailingSilence: 10,
 		Rule2MinTrailingSilence: 1.2,
 		Rule3MinUtteranceLength: 20,
 	}
