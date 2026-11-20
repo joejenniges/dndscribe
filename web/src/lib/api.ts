@@ -2,6 +2,7 @@ import type {
   Campaign, Session, TranscriptionLine, VoiceChannel, VoiceMember,
   BotStatus, IgnoredUser, NicknamePreset, NicknameCategory,
   SessionPreview, SearchResult,
+  DjTrack, DjPlaylist, DjScene, DjState,
 } from './types';
 
 const BASE = '';
@@ -179,4 +180,44 @@ export const saveRecordings = {
     request<{ enabled: boolean }>('/api/save-recordings', {
       method: 'POST', body: JSON.stringify({ enabled }),
     }),
+};
+
+// ---- DJ ----
+
+const post = <T>(url: string, body?: unknown) =>
+  request<T>(url, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) });
+
+type SceneInput = Omit<DjScene, 'id' | 'position'>;
+
+export const dj = {
+  state: () => request<DjState>('/api/dj/state'),
+  play: (target: { sceneId?: number; playlistId?: number; trackId?: number; fadeSeconds?: number }) =>
+    post<DjState>('/api/dj/play', target),
+  stop: (fadeSeconds?: number) => post<DjState>('/api/dj/stop', fadeSeconds === undefined ? {} : { fadeSeconds }),
+  pause: () => post<DjState>('/api/dj/pause'),
+  resume: () => post<DjState>('/api/dj/resume'),
+  next: () => post<DjState>('/api/dj/next'),
+  volume: (volume: number) => post<DjState>('/api/dj/volume', { volume }),
+  fade: (seconds: number) => post<DjState>('/api/dj/fade', { seconds }),
+  tone: (seconds = 10) => post<DjState>('/api/dj/tone', { seconds }),
+
+  tracks: () => request<DjTrack[]>('/api/dj/tracks'),
+  rescan: () => post<{ found: number; probed: number; missing: number }>('/api/dj/tracks/rescan'),
+
+  playlists: {
+    list: () => request<DjPlaylist[]>('/api/dj/playlists'),
+    create: (name: string, trackIds: number[] = []) => post<DjPlaylist>('/api/dj/playlists', { name, trackIds }),
+    update: (id: number, patch: { name?: string; trackIds?: number[] }) =>
+      request<DjPlaylist>(`/api/dj/playlists/${id}`, { method: 'PUT', body: JSON.stringify(patch) }),
+    delete: (id: number) => request<{ success: boolean }>(`/api/dj/playlists/${id}`, { method: 'DELETE' }),
+  },
+
+  scenes: {
+    list: () => request<DjScene[]>('/api/dj/scenes'),
+    create: (s: SceneInput) => post<DjScene>('/api/dj/scenes', s),
+    update: (id: number, s: SceneInput) =>
+      request<DjScene>(`/api/dj/scenes/${id}`, { method: 'PUT', body: JSON.stringify(s) }),
+    delete: (id: number) => request<{ success: boolean }>(`/api/dj/scenes/${id}`, { method: 'DELETE' }),
+    order: (ids: number[]) => post<{ success: boolean }>('/api/dj/scenes/order', { ids }),
+  },
 };

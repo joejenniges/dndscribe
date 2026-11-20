@@ -220,6 +220,10 @@ func runMigrations(ctx context.Context) error {
 		return fmt.Errorf("create speakers index: %w", err)
 	}
 
+	if err := migrateDJ(ctx); err != nil {
+		return fmt.Errorf("dj migration: %w", err)
+	}
+
 	// Seed default campaign
 	_, err = pool.Exec(ctx, `
 		INSERT INTO campaigns (id, name, description)

@@ -15,6 +15,7 @@ import (
 	"github.com/joe/dndscribe-go/internal/bot"
 	"github.com/joe/dndscribe-go/internal/config"
 	"github.com/joe/dndscribe-go/internal/db"
+	"github.com/joe/dndscribe-go/internal/dj"
 	"github.com/joe/dndscribe-go/internal/transcribe"
 	"github.com/joe/dndscribe-go/internal/web"
 )
@@ -92,6 +93,32 @@ func main() {
 		hub.Broadcast(map[string]interface{}{"type": "ignored_users", "data": users}, &cid)
 	}
 
+	// DJ: server-side mixer that plays music through the bot's voice connection.
+	enc, err := dj.NewOpusEncoder(cfg.DJ.Bitrate)
+	if err != nil {
+		log.Fatal("DJ opus encoder: ", err)
+	}
+	djEngine := dj.NewEngine(cfg.DJ.FFmpeg, cfg.DJ.MusicDir,
+		&dj.VoiceOutput{Conn: b.VoiceConnection}, enc, cfg.DJ.Volume, cfg.DJ.FadeSeconds)
+	djEngine.OnState = func(st dj.State) {
+		hub.Broadcast(map[string]interface{}{"type": "dj_state", "data": st}, nil)
+	}
+	djLibrary := dj.NewLibrary(cfg.DJ.FFmpeg, cfg.DJ.MusicDir)
+	djHandler := dj.NewHandler(djEngine, djLibrary)
+	djHandler.OnLibraryChanged = func() {
+		hub.Broadcast(map[string]interface{}{"type": "dj_library"}, nil)
+	}
+	djCtx, djCancel := context.WithCancel(context.Background())
+	defer djCancel()
+	go djEngine.Run(djCtx)
+	go func() {
+		if _, err := djLibrary.Scan(djCtx); err != nil {
+			log.Printf("DJ library scan: %v", err)
+			return
+		}
+		hub.Broadcast(map[string]interface{}{"type": "dj_library"}, nil)
+	}()
+
 	// Set up WS init message -- sent to every new client on connect.
 	hub.SetInitFunc(func() []byte {
 		initMsg := map[string]interface{}{
@@ -99,6 +126,7 @@ func main() {
 			"status":         b.GetStatus(),
 			"members":        b.GetVoiceMembers(),
 			"saveRecordings": b.GetSaveRecordings(),
+			"dj":             djEngine.State(),
 		}
 		data, _ := json.Marshal(initMsg)
 		return data
@@ -141,7 +169,7 @@ func main() {
 	defer worker.Stop()
 
 	// Start web server.
-	srv := web.Start(cfg, b, hub, worker)
+	srv := web.Start(cfg, b, hub, worker, djHandler)
 	log.Printf("Web UI listening on http://localhost:%d", cfg.Web.Port)
 
 	// Start Discord bot.

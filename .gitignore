@@ -22,3 +22,6 @@ config.yaml
 hotwords.txt
 *.exe~
 .idea/
+
+# DJ music library (local audio files, not versioned)
+/music/

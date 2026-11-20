@@ -64,3 +64,13 @@ transcribe:
 recordings:
   dir: "recordings"
   save_raw: false
+
+# Music playback into the voice channel (DJ Studio). Plays through the same
+# voice connection the bot records on, so music only plays while the bot is in
+# a channel. Tracks are any audio files under music_dir; ffmpeg decodes them.
+dj:
+  music_dir: "music"
+  ffmpeg: "ffmpeg"        # path or name on PATH
+  volume: 0.5             # master volume at startup, 0..1
+  fade_seconds: 6         # default crossfade when switching scenes
+  bitrate: 128000         # opus bitrate, bits/s

@@ -1,6 +1,7 @@
 import { writable, type Writable } from 'svelte/store';
 import { subscribe as wsSubscribe } from '$lib/ws';
 import type { BotStatus, VoiceMember } from '$lib/types';
+import { djState, djLibraryVersion } from '$lib/stores/dj';
 
 export const botStatus: Writable<BotStatus> = writable({ recording: false, channelName: null, campaignId: null });
 export const voiceMembers: Writable<VoiceMember[]> = writable([]);
@@ -16,6 +17,7 @@ export function initWsStores(): () => void {
         botStatus.set(msg.status);
         voiceMembers.set(msg.members || []);
         saveRecordingsEnabled.set(msg.saveRecordings ?? false);
+        if (msg.dj) djState.set({ ...msg.dj, receivedAt: Date.now() });
         wsConnected.set(true);
         break;
       case 'status':
@@ -26,6 +28,12 @@ export function initWsStores(): () => void {
         break;
       case 'ws_closed':
         wsConnected.set(false);
+        break;
+      case 'dj_state':
+        djState.set({ ...msg.data, receivedAt: Date.now() });
+        break;
+      case 'dj_library':
+        djLibraryVersion.update((n) => n + 1);
         break;
       case 'save_recordings':
         saveRecordingsEnabled.set(msg.data);

@@ -483,6 +483,28 @@ func (b *Bot) SetCharacterName(campaignID int64, userID string, name *string) {
 	}
 }
 
+// VoiceConnection returns the live voice connection while the bot is in a
+// channel, or nil. The DJ engine calls this every 20ms tick to find where to
+// send music, so it must stay cheap and must not block on voice I/O.
+//
+// WHY the session map rather than voiceState.Connection: the session's map
+// always holds the connection discordgo is currently using for the guild.
+func (b *Bot) VoiceConnection() *discordgo.VoiceConnection {
+	b.voiceStateMu.Lock()
+	vs := b.voiceState
+	b.voiceStateMu.Unlock()
+	if vs == nil {
+		return nil
+	}
+	b.session.RLock()
+	vc := b.session.VoiceConnections[b.guildID]
+	b.session.RUnlock()
+	if vc == nil {
+		vc = vs.Connection
+	}
+	return vc
+}
+
 // IsRecording returns true if the bot is currently recording.
 func (b *Bot) IsRecording() bool {
 	b.voiceStateMu.Lock()

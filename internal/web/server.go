@@ -28,7 +28,10 @@ func init() {
 // Start creates and starts the HTTP server. It returns the *http.Server so the
 // caller can shut it down gracefully. The hub and worker are created externally
 // so the caller can wire event callbacks before starting the server.
-func Start(cfg *config.Config, ctrl BotController, hub *Hub, worker TranscriptionWorker) *http.Server {
+//
+// djHandler serves /api/dj/*; it lives in its own package and is mounted here
+// so it shares the server and CORS handling.
+func Start(cfg *config.Config, ctrl BotController, hub *Hub, worker TranscriptionWorker, djHandler http.Handler) *http.Server {
 	go hub.Run()
 
 	api := &APIHandler{
@@ -44,6 +47,18 @@ func Start(cfg *config.Config, ctrl BotController, hub *Hub, worker Transcriptio
 	mux.HandleFunc("/recordings/raw/", func(w http.ResponseWriter, r *http.Request) {
 		serveAudioFile(w, r, cfg.Recordings.Dir)
 	})
+
+	// DJ routes (more specific prefix than /api/, so ServeMux picks this one)
+	if djHandler != nil {
+		mux.HandleFunc("/api/dj/", func(w http.ResponseWriter, r *http.Request) {
+			setCORS(w)
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			djHandler.ServeHTTP(w, r)
+		})
+	}
 
 	// API routes
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {

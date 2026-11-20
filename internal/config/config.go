@@ -12,6 +12,24 @@ type Config struct {
 	Web        WebConfig        `yaml:"web"`
 	Transcribe TranscribeConfig `yaml:"transcribe"`
 	Recordings RecordingsConfig `yaml:"recordings"`
+	DJ         DJConfig         `yaml:"dj"`
+}
+
+// DJConfig configures music playback into the voice channel. The mixer runs on
+// the server and sends through the same voice connection the recorder uses, so
+// music only plays while the bot is in a channel.
+type DJConfig struct {
+	// MusicDir is scanned recursively for audio files. Default "music".
+	MusicDir string `yaml:"music_dir"`
+	// FFmpeg is the ffmpeg executable used to decode tracks and read their
+	// duration/tags. Default "ffmpeg" (resolved on PATH).
+	FFmpeg string `yaml:"ffmpeg"`
+	// Volume is the master volume at startup, 0..1. Default 0.5.
+	Volume float64 `yaml:"volume"`
+	// FadeSeconds is the default crossfade length when switching scenes. Default 6.
+	FadeSeconds float64 `yaml:"fade_seconds"`
+	// Bitrate is the opus bitrate in bits/s. Default 128000.
+	Bitrate int `yaml:"bitrate"`
 }
 
 type DiscordConfig struct {
@@ -154,6 +172,21 @@ func Load(path string) (*Config, error) {
 	ApplyDiarizationDefaults(&cfg.Transcribe.Diarization)
 	if cfg.Recordings.Dir == "" {
 		cfg.Recordings.Dir = "recordings"
+	}
+	if cfg.DJ.MusicDir == "" {
+		cfg.DJ.MusicDir = "music"
+	}
+	if cfg.DJ.FFmpeg == "" {
+		cfg.DJ.FFmpeg = "ffmpeg"
+	}
+	if cfg.DJ.Volume == 0 {
+		cfg.DJ.Volume = 0.5
+	}
+	if cfg.DJ.FadeSeconds == 0 {
+		cfg.DJ.FadeSeconds = 6
+	}
+	if cfg.DJ.Bitrate == 0 {
+		cfg.DJ.Bitrate = 128000
 	}
 	return &cfg, nil
 }

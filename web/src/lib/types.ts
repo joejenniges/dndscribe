@@ -91,3 +91,59 @@ export interface SessionPreview {
 export interface SearchResult extends TranscriptionLine {
   sessionId: number;
 }
+
+// ---- DJ ----
+
+export interface DjTrack {
+  id: number;
+  path: string;
+  title: string;
+  artist: string;
+  durationMs: number;
+  missing: boolean;
+}
+
+export interface DjPlaylist {
+  id: number;
+  name: string;
+  trackIds: number[];
+}
+
+export interface DjScene {
+  id: number;
+  name: string;
+  playlistId: number | null;
+  color: string;
+  volume: number;
+  shuffle: boolean;
+  loop: boolean;
+  fadeSeconds: number | null;
+  position: number;
+}
+
+export interface DjTrackInfo {
+  id: number;
+  title: string;
+  artist: string;
+  durationMs: number;
+}
+
+export interface DjState {
+  connected: boolean;
+  playing: boolean;
+  paused: boolean;
+  sceneId: number | null;
+  playlistId: number | null;
+  programName: string;
+  track: DjTrackInfo | null;
+  positionMs: number;
+  at: number;
+  upNext: DjTrackInfo[];
+  loop: boolean;
+  shuffle: boolean;
+  volume: number;
+  fadeSeconds: number;
+  error?: string;
+  /** Client clock when this state arrived; used to interpolate position. */
+  receivedAt?: number;
+}
