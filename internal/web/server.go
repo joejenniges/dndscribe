@@ -60,6 +60,8 @@ func Start(cfg *config.Config, ctrl BotController, hub *Hub, worker Transcriptio
 		})
 	}
 
+	registerConnectRoutes(mux, cfg.Web.Port)
+
 	// API routes
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)

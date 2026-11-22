@@ -5,16 +5,39 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/websocket"
 	"github.com/joe/dndscribe-go/internal/db"
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins, matching the TypeScript implementation
-	},
+var upgrader = websocket.Upgrader{CheckOrigin: checkOrigin}
+
+// checkOrigin accepts the app's own pages (whatever host they were opened
+// on: localhost, a LAN IP, the Tailscale name) and the Vite dev server on
+// localhost. It refuses other websites, which could otherwise drive the DJ
+// and read transcripts from a browser on the same network. There is no auth;
+// this is the one cheap guard against cross-site WebSocket use.
+func checkOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true // not a browser
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(u.Host, r.Host) {
+		return true
+	}
+	switch u.Hostname() {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	log.Printf("WebSocket: refused origin %q (host %q)", origin, r.Host)
+	return false
 }
 
 // wsClient represents a single WebSocket connection.

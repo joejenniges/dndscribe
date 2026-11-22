@@ -1,4 +1,4 @@
-import type {
+import type { ConnectUrl,
   Campaign, Session, TranscriptionLine, VoiceChannel, VoiceMember,
   BotStatus, IgnoredUser, NicknamePreset, NicknameCategory,
   SessionPreview, SearchResult,
@@ -244,6 +244,11 @@ const post = <T>(url: string, body?: unknown) =>
   request<T>(url, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) });
 
 type SceneInput = Omit<DjScene, 'id' | 'position'>;
+
+// Addresses another device can open this app on (shown as QR codes).
+export const connect = {
+  urls: () => request<{ urls: ConnectUrl[] }>('/api/connect'),
+};
 
 export const dj = {
   state: () => request<DjState>('/api/dj/state'),

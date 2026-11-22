@@ -190,3 +190,8 @@ export interface DjWaveform {
   /** Two bytes per bin: peak, then RMS, each 0..255 of the track's loudest peak. */
   data: Uint8Array;
 }
+
+export interface ConnectUrl {
+  label: string;
+  url: string;
+}
