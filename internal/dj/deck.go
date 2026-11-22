@@ -540,6 +540,34 @@ func (e *Engine) SetDeckGain(i int, g float64) error {
 
 // SetCrossfader moves the crossfader by hand. It cancels any automated
 // transition at once, so the automation never fights the user.
+// FadeToDeck crossfades to deck i over the global fade time, starting it if
+// it's cued, and unloads the other deck when the fade completes (the same
+// move as a scene change, but onto a track the user put on the deck). If the
+// fader is already on that side it just starts the deck.
+func (e *Engine) FadeToDeck(i int) error {
+	if err := checkDeck(i); err != nil {
+		return err
+	}
+	if !e.isConnected() {
+		return ErrNotConnected
+	}
+	e.mu.Lock()
+	d := e.decks[i]
+	switch {
+	case d.loading:
+		e.mu.Unlock()
+		return fmt.Errorf("deck %s is still loading", deckName(i))
+	case d.v == nil || d.v.done:
+		e.mu.Unlock()
+		return fmt.Errorf("nothing to play on deck %s", deckName(i))
+	}
+	d.ejectWhenSilent = false
+	e.pausedByPauseAll = nil
+	e.startTransitionLocked(i, secondsToFrames(e.fadeSeconds), "track")
+	e.mu.Unlock()
+	return nil
+}
+
 func (e *Engine) SetCrossfader(x float64) {
 	e.mu.Lock()
 	e.auto = nil

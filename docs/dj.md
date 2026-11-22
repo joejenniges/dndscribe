@@ -87,6 +87,7 @@ Positions are not streamed. Each deck has `positionMs` sampled at `at` (server u
 | `mix.master` / `mix.sfxGain` | `value` 0..1 |
 | `mix.autoDJ` | `on` |
 | `mix.next` / `mix.stopAll` | none |
+| `mix.fadeTo` | `deck` (start it if cued and crossfade to it over the global fade; the other deck unloads after) |
 | `scene.play` | `sceneId` |
 | `folder.play` | `folder` (music-dir relative, "" = all), optional `trackId` to start at |
 | `track.play` | `trackId` (crossfade to it now; the queue carries on after) |
@@ -112,3 +113,7 @@ Editing and uploads stay on HTTP under `/api/dj/` (tracks, folders, files, scene
 ## Security
 
 There is no login: the app is meant for a home LAN or a Tailscale tailnet. Don't expose the port to the internet. The WebSocket only accepts pages served from the app itself (same host) or localhost, so another website open in the same browser can't drive the DJ or read transcripts.
+
+## Keyboard shortcuts
+
+`web/src/lib/dj/hotkeys.ts`, installed only on the DJ page; the list in that file is what the in-page help (`?`) shows. Tab switches the selected deck (so Tab no longer moves focus on this page), Space plays/pauses it, X crossfades to it (`mix.fadeTo`), plus pads on 1-0, scenes on Shift+1-9, crossfader and master on the arrows, Esc / Shift+Esc to stop effects / everything. The selected deck is per device. Shortcuts can be turned off per device in the help dialog, which gives Tab back. They are ignored in text fields, with a dialog open, and with Ctrl/Alt/Cmd held.

@@ -9,6 +9,7 @@
   import { djCmd } from '$lib/dj/control';
   import { deckPosition, DECK_NAMES } from '$lib/dj/live';
   import { clock } from '$lib/dj/clock';
+  import { selectedDeck, hotkeysOn } from '$lib/dj/hotkeys';
   import { addToast } from '$lib/stores/toast';
   import type { DjState } from '$lib/types';
   import Fader from './Fader.svelte';
@@ -71,8 +72,12 @@
   });
 </script>
 
+<!-- Pointer-down anywhere on the card selects the deck for the keyboard
+     shortcuts; it's a convenience, the deck's own buttons do the work. -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <section class="deck card deck-{deck}" class:compact class:on-air={onAir} class:stale={!live}
-  aria-label="Deck {DECK_NAMES[deck]}">
+  class:selected={$hotkeysOn && $selectedDeck === deck} onpointerdown={() => selectedDeck.set(deck)}
+  aria-label="Deck {DECK_NAMES[deck]}{$hotkeysOn && $selectedDeck === deck ? ', selected' : ''}">
   <header>
     <span class="tag" aria-hidden="true">{DECK_NAMES[deck]}</span>
     <div class="title">
@@ -141,6 +146,10 @@
   .deck { --deck-color: var(--deck-a); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
   .deck.deck-1 { --deck-color: var(--deck-b); }
   .deck.on-air { border-color: color-mix(in srgb, var(--deck-color) 60%, var(--border-color)); }
+  /* Selected for the keyboard (Tab switches): a solid ring in the deck
+     colour, distinct from the softer on-air border. */
+  .deck.selected { box-shadow: 0 0 0 2px var(--deck-color); }
+  .deck.selected .tag { box-shadow: 0 0 0 3px color-mix(in srgb, var(--deck-color) 35%, transparent); }
   .stale { opacity: 0.6; }
   header { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .tag {

@@ -29,6 +29,9 @@
   import DjStatusBar from '$lib/components/dj/DjStatusBar.svelte';
   import UploadDialog from '$lib/components/dj/UploadDialog.svelte';
   import { fromDrop } from '$lib/components/dj/library';
+  import Modal from '$lib/components/ui/Modal.svelte';
+  import Toggle from '$lib/components/ui/Toggle.svelte';
+  import { installHotkeys, selectedDeck, hotkeysOn, HOTKEYS } from '$lib/dj/hotkeys';
 
   // ---- Shared data ----
   let tracks = $state<DjTrack[]>([]);
@@ -221,6 +224,27 @@
     uploadDialog?.addFiles(files);
     uploadOpen = true;
   }
+
+  // ---- Keyboard shortcuts (lib/dj/hotkeys.ts) ----
+  let keysOpen = $state(false);
+  const hasKeyboard = deviceKind() === 'desktop';
+  onMount(() =>
+    installHotkeys({
+      state: () => st,
+      live: () => live,
+      scenes: () => scenes,
+      pad: (i) => soundboard?.triggerAt(i) ?? false,
+      help: () => (keysOpen = true),
+    }),
+  );
+  // Start with the on-air deck selected, so Space first pauses what's
+  // playing rather than starting the other deck.
+  let deckSeeded = false;
+  $effect(() => {
+    if (deckSeeded || !st) return;
+    deckSeeded = true;
+    if (st.onAir === 0 || st.onAir === 1) selectedDeck.set(st.onAir);
+  });
 </script>
 
 <svelte:head><title>DJ Studio - dndscribe</title></svelte:head>
@@ -244,6 +268,12 @@
     {/if}
     <div class="head-right">
       <VoiceControl {st} {live} />
+      {#if hasKeyboard}
+        <button class="btn btn-sm keys-btn" onclick={() => (keysOpen = true)} title="Keyboard shortcuts (?)"
+          aria-label="Keyboard shortcuts">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" /></svg>
+        </button>
+      {/if}
       {#if mode === 'performance'}
         <button class="btn btn-sm" class:active={perfLib} onclick={togglePerfLib} aria-expanded={perfLib}>Library</button>
       {:else if narrow && !stacked}
@@ -391,7 +421,32 @@
 <UploadDialog bind:this={uploadDialog} bind:open={uploadOpen} bind:uploading bind:progress={uploadProgress}
   {folders} defaultFolder={selectedFolder} />
 
+<Modal bind:open={keysOpen} title="Keyboard shortcuts" width="520px">
+  <Toggle bind:checked={$hotkeysOn} label="Shortcuts on this device"
+    hint="Off gives Tab back to moving between controls" />
+  <table class="keys" class:off={!$hotkeysOn}>
+    <tbody>
+      {#each HOTKEYS as k (k.keys)}
+        <tr><td><kbd>{k.keys}</kbd></td><td>{k.what}</td></tr>
+      {/each}
+    </tbody>
+  </table>
+  <p class="tiny subtle">Ignored while typing in a field or with a dialog open. The selected deck has a ring around it; clicking a deck also selects it.</p>
+  {#snippet footer()}
+    <span style="flex: 1"></span>
+    <button class="btn-primary" onclick={() => (keysOpen = false)}>Done</button>
+  {/snippet}
+</Modal>
+
 <style>
+  .keys-btn { min-width: 40px; padding: 0 8px; display: inline-grid; place-items: center; }
+  .keys-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+  .keys { width: 100%; border-collapse: collapse; margin: 12px 0 8px; font-size: 14px; }
+  .keys.off { opacity: 0.5; }
+  .keys td { padding: 6px 4px; border-bottom: 1px solid var(--border-color); vertical-align: top; }
+  .keys td:first-child { width: 132px; white-space: nowrap; }
+  kbd { font: 600 12px/1 ui-monospace, monospace; padding: 4px 7px; border-radius: 5px; background: var(--surface-raised); border: 1px solid var(--border-strong); border-bottom-width: 2px; }
+
   /* The page fills the viewport under the app header; panes scroll inside. */
   .dj { height: calc(100dvh - var(--header-h)); display: flex; flex-direction: column; min-height: 0; }
 

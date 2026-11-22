@@ -115,6 +115,14 @@
     }
   }
 
+  /** Keyboard shortcut: trigger the i-th pad of the open tab. */
+  export function triggerAt(i: number): boolean {
+    const p = tabPads[i];
+    if (!p || editMode) return false;
+    tap(p);
+    return true;
+  }
+
   async function stopAll() {
     try {
       await djCmd('sfx.stop');

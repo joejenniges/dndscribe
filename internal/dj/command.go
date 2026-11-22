@@ -187,6 +187,11 @@ func (h *Handler) runCommand(ctx context.Context, c wsCommand) error {
 		e.SetAutoDJ(*a.On)
 	case "mix.next":
 		return e.Next()
+	case "mix.fadeTo":
+		if err := need(a.Deck != nil, "deck"); err != nil {
+			return err
+		}
+		return e.FadeToDeck(*a.Deck)
 	case "mix.stopAll":
 		e.Stop(nil)
 
