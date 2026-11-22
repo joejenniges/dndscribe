@@ -2,6 +2,7 @@
   // Peak level meter for a deck or the master, from the server's dj_meters
   // reports (~10/s). Bars fall back smoothly between reports instead of
   // jumping to zero.
+  import { untrack } from 'svelte';
   import { djMeters } from '$lib/stores/dj';
 
   let {
@@ -14,8 +15,15 @@
   // dB scale over the top 48dB, so quiet ambience still shows movement.
   const level = $derived(raw > 0 ? Math.max(0, 1 + (20 * Math.log10(raw)) / 48) : 0);
   let shown = $state(0);
+  // Once per meter report: rise to the new level at once, fall by 40%.
+  // WHY untrack: reading `shown` here would make this effect depend on what
+  // it writes, so it re-runs itself. With the level at 0 (a paused deck) it
+  // then decays ~1400 times in one go and trips Svelte's update-depth guard,
+  // which stops every update on the page.
   $effect(() => {
-    shown = Math.max(level, shown * 0.6);
+    $djMeters; // a new object per report, so this runs even if the level repeats
+    const l = level;
+    shown = untrack(() => Math.max(l, shown * 0.6));
   });
   const hot = $derived(raw > 0.89); // within ~1dB of full scale: the limiter is working
 </script>

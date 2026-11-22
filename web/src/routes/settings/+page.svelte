@@ -6,16 +6,19 @@
   import { onMount } from 'svelte';
   import { dj } from '$lib/api';
   import { addToast } from '$lib/stores/toast';
+  import Toggle from '$lib/components/ui/Toggle.svelte';
 
   let loaded = $state(false);
   let fade = $state(6);
   let saved = $state(6);
   let saving = $state(false);
+  let testChannel = $state(false);
 
   onMount(async () => {
     try {
       const s = await dj.settings();
       fade = saved = s.fadeSeconds;
+      testChannel = s.testChannel;
       loaded = true;
     } catch (e) {
       addToast(`Couldn't load settings: ${(e as Error).message}`, 'error');
@@ -36,6 +39,15 @@
       fade = saved;
     } finally {
       saving = false;
+    }
+  }
+
+  async function saveTestChannel(on: boolean) {
+    try {
+      testChannel = (await dj.saveSettings({ testChannel: on })).testChannel;
+    } catch (e) {
+      addToast(`Couldn't save: ${(e as Error).message}`, 'error');
+      testChannel = !on;
     }
   }
 
@@ -78,6 +90,21 @@
             <button class="btn btn-sm" class:on={fade === p} onclick={() => saveFade(p)} disabled={!loaded}>{fmt(p)}</button>
           {/each}
         </div>
+      </div>
+    </div>
+
+    <div class="setting">
+      <div class="label">
+        <strong>Test channel</strong>
+        <span class="small subtle">
+          Adds "Test channel (no Discord)" to the voice channel list. Joining it doesn't touch Discord: the DJ runs
+          as if the bot were in voice (decks, fades, Auto DJ and effects all advance in real time) but the audio is
+          thrown away. For trying the DJ Studio without disturbing anyone. Music only; it can't record.
+        </span>
+      </div>
+      <div class="control">
+        <Toggle bind:checked={testChannel} label="Show the test channel" disabled={!loaded}
+          onchange={(v: boolean) => saveTestChannel(v)} />
       </div>
     </div>
   </section>

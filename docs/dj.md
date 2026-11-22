@@ -117,3 +117,11 @@ There is no login: the app is meant for a home LAN or a Tailscale tailnet. Don't
 ## Keyboard shortcuts
 
 `web/src/lib/dj/hotkeys.ts`, installed only on the DJ page; the list in that file is what the in-page help (`?`) shows. Tab switches the selected deck (so Tab no longer moves focus on this page), Space plays/pauses it, X crossfades to it (`mix.fadeTo`), plus pads on 1-0, scenes on Shift+1-9, crossfader and master on the arrows, Esc / Shift+Esc to stop effects / everything. The selected deck is per device. Shortcuts can be turned off per device in the help dialog, which gives Tab back. They are ignored in text fields, with a dialog open, and with Ctrl/Alt/Cmd held.
+
+## Test channel
+
+Settings page toggle (`testChannel` in `/api/dj/settings`, saved as `dj.test_channel`). When on, "Test channel (no Discord)" (id `test-channel`) is listed last among the voice channels. Joining it for music never touches Discord: the bot's status reports it as a music-only channel and the engine's `SwitchOutput` sends to a `NullOutput`, which drains frames at the real 20 ms rate, so decks, fades, Auto DJ and effects advance in real time but the audio is discarded. Recording in it is refused. Joining a real channel, starting a recording, or switching the setting off leaves it.
+
+## Deck play and the crossfader
+
+`deck.play` with the other deck silent also moves the crossfader to that deck (otherwise it would play inaudibly). With the other deck playing, the fader is left alone so a track can be started under the current one and brought in with `mix.fadeTo`.

@@ -1,6 +1,9 @@
 package dj
 
 import (
+	"sync"
+	"time"
+
 	"github.com/bwmarrin/discordgo"
 )
 
@@ -84,3 +87,71 @@ func (o *VoiceOutput) SetSpeaking(on bool) {
 	}
 	_ = vc.Speaking(on)
 }
+
+// NullOutput stands in for a voice connection when the bot is in the test
+// channel: it accepts frames and drains them at the real 20ms rate, so the
+// mixer runs at normal speed (positions, fades and Auto DJ timing behave as
+// in Discord) but the audio goes nowhere.
+type NullOutput struct {
+	mu     sync.Mutex
+	queued int
+	last   time.Time
+}
+
+const nullOutputCap = 16 // same depth as discordgo's OpusSend
+
+func (o *NullOutput) drainLocked() {
+	now := time.Now()
+	if o.last.IsZero() {
+		o.last = now
+		return
+	}
+	n := int(now.Sub(o.last) / (FrameMs * time.Millisecond))
+	if n > 0 {
+		o.queued = max(0, o.queued-n)
+		o.last = o.last.Add(time.Duration(n) * FrameMs * time.Millisecond)
+	}
+}
+
+func (o *NullOutput) Ready() bool { return true }
+
+func (o *NullOutput) Queued() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.drainLocked()
+	return o.queued
+}
+
+func (o *NullOutput) Send([]byte) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.drainLocked()
+	if o.queued >= nullOutputCap {
+		return false
+	}
+	o.queued++
+	return true
+}
+
+func (o *NullOutput) SetSpeaking(bool) {}
+
+// SwitchOutput sends to Test while UseTest reports true, otherwise to Real.
+// Checked on every call, like VoiceOutput's connection lookup, so joining or
+// leaving the test channel takes effect on the next tick.
+type SwitchOutput struct {
+	Real    Output
+	Test    Output
+	UseTest func() bool
+}
+
+func (o *SwitchOutput) pick() Output {
+	if o.UseTest != nil && o.UseTest() {
+		return o.Test
+	}
+	return o.Real
+}
+
+func (o *SwitchOutput) Ready() bool         { return o.pick().Ready() }
+func (o *SwitchOutput) Queued() int         { return o.pick().Queued() }
+func (o *SwitchOutput) Send(f []byte) bool  { return o.pick().Send(f) }
+func (o *SwitchOutput) SetSpeaking(on bool) { o.pick().SetSpeaking(on) }

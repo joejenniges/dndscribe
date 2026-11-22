@@ -15,6 +15,7 @@ import (
 // Setting keys.
 const (
 	SettingDJFadeSeconds = "dj.fade_seconds"
+	SettingDJTestChannel = "dj.test_channel"
 )
 
 func migrateSettings(ctx context.Context) error {

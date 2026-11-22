@@ -246,6 +246,8 @@ export interface PresenceClient {
 
 export interface DjSettings {
   fadeSeconds: number;
+  /** Show the pretend voice channel for testing without Discord. */
+  testChannel: boolean;
 }
 
 export interface DjWaveform {

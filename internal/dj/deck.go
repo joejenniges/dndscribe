@@ -482,6 +482,14 @@ func (e *Engine) PlayDeck(i int) error {
 	d.runStep = 0
 	d.ejectWhenSilent = false
 	e.pausedByPauseAll = nil
+	// With nothing else playing, Play means "play this": put the crossfader
+	// on this deck, or it would play silently with the fader on the other
+	// side. With the other deck playing the fader stays put, so a track can
+	// be started under the current one and brought in with a crossfade.
+	if !e.decks[1-i].audible() && e.auto == nil {
+		e.xTarget = deckSide(i)
+		e.xfade = e.xTarget
+	}
 	e.mu.Unlock()
 	e.notify()
 	return nil

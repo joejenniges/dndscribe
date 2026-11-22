@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/joe/dndscribe-go/internal/config"
@@ -47,6 +48,10 @@ type Bot struct {
 	// is set; starting a recording in the same channel takes over this
 	// connection instead of reconnecting, so music keeps playing.
 	music *musicVoice
+	// inTest: in the pretend test channel (testchannel.go). Guarded by
+	// voiceStateMu; never set together with voiceState or music.
+	inTest        bool
+	testChannelOn atomic.Bool
 
 	// Save recordings preference (persists across sessions).
 	saveRecordings bool
@@ -257,6 +262,10 @@ func (b *Bot) GetVoiceChannels() []web.VoiceChannelInfo {
 			Members: members,
 		})
 	}
+	// Last, so it's never the default pick over a real channel.
+	if b.TestChannelEnabled() {
+		result = append(result, testChannelInfo())
+	}
 	return result
 }
 
@@ -314,6 +323,16 @@ func (b *Bot) GetVoiceMembers() []web.VoiceMemberInfo {
 
 // JoinChannel joins a voice channel and starts recording.
 func (b *Bot) JoinChannel(channelID string, campaignID int64) (string, error) {
+	if channelID == TestChannelID {
+		return "", errTestChannelRecording
+	}
+	// Recording in a real channel replaces the test channel.
+	b.voiceStateMu.Lock()
+	left := b.leaveTestChannelLocked()
+	b.voiceStateMu.Unlock()
+	if left && b.OnStatus != nil {
+		b.OnStatus()
+	}
 	// Quick check without holding lock during the blocking voice join.
 	b.voiceStateMu.Lock()
 	if b.voiceState != nil {
@@ -518,6 +537,12 @@ func (b *Bot) SetCharacterName(campaignID int64, userID string, name *string) {
 // bot is already recording in that channel, music plays through the recording
 // connection and this is a no-op. Returns the channel name.
 func (b *Bot) JoinMusic(channelID string) (string, error) {
+	if channelID == TestChannelID {
+		return b.joinTestChannel()
+	}
+	b.voiceStateMu.Lock()
+	b.leaveTestChannelLocked()
+	b.voiceStateMu.Unlock()
 	channel, err := b.session.Channel(channelID)
 	if err != nil {
 		return "", fmt.Errorf("channel not found: %w", err)
@@ -580,7 +605,14 @@ func (b *Bot) LeaveMusic() {
 	b.voiceStateMu.Lock()
 	mv := b.music
 	b.music = nil
+	wasTest := b.leaveTestChannelLocked()
 	b.voiceStateMu.Unlock()
+	if wasTest {
+		log.Println("Left the test channel")
+		if b.OnStatus != nil {
+			b.OnStatus()
+		}
+	}
 	if mv == nil {
 		return
 	}
@@ -639,7 +671,12 @@ func (b *Bot) GetStatus() web.BotStatus {
 	if vs == nil {
 		b.voiceStateMu.Lock()
 		mv := b.music
+		inTest := b.inTest
 		b.voiceStateMu.Unlock()
+		if inTest {
+			name, id := TestChannelName, TestChannelID
+			return web.BotStatus{MusicOnly: true, ChannelName: &name, ChannelID: &id}
+		}
 		if mv == nil {
 			return web.BotStatus{Recording: false}
 		}

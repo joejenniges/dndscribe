@@ -31,6 +31,13 @@ type Handler struct {
 	changeTimer *time.Timer
 
 	acks ackCache // recent WebSocket command results, by id
+
+	// TestChannel shows or hides the pretend voice channel (set up in main;
+	// the bot owns it). Nil = not available.
+	TestChannel interface {
+		TestChannelEnabled() bool
+		SetTestChannelEnabled(bool)
+	}
 }
 
 // maxUploadBytes caps one uploaded file. Generous: an hour-long FLAC
@@ -122,10 +129,18 @@ func NewHandler(engine *Engine, library *Library, sb *Soundboard, waves *Wavefor
 	m.HandleFunc("PUT /api/dj/settings", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			FadeSeconds *float64 `json:"fadeSeconds"`
+			TestChannel *bool    `json:"testChannel"`
 		}
 		if err := readBody(r, &body); err != nil {
 			writeErr(w, http.StatusBadRequest, "invalid body")
 			return
+		}
+		if body.TestChannel != nil && h.TestChannel != nil {
+			h.TestChannel.SetTestChannelEnabled(*body.TestChannel)
+			if err := db.SetSetting(r.Context(), db.SettingDJTestChannel, *body.TestChannel); err != nil {
+				writeErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 		}
 		if body.FadeSeconds != nil {
 			if *body.FadeSeconds < 0 || *body.FadeSeconds > 30 {
@@ -393,10 +408,15 @@ func (h *Handler) changed() {
 
 type djSettings struct {
 	FadeSeconds float64 `json:"fadeSeconds"`
+	TestChannel bool    `json:"testChannel"`
 }
 
 func (h *Handler) settings() djSettings {
-	return djSettings{FadeSeconds: h.engine.FadeSeconds()}
+	s := djSettings{FadeSeconds: h.engine.FadeSeconds()}
+	if h.TestChannel != nil {
+		s.TestChannel = h.TestChannel.TestChannelEnabled()
+	}
+	return s
 }
 
 func (h *Handler) setFade(r *http.Request, seconds float64) error {

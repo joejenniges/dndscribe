@@ -103,8 +103,19 @@ func main() {
 	if _, err := db.GetSetting(context.Background(), db.SettingDJFadeSeconds, &djFade); err != nil {
 		log.Printf("DJ: read saved crossfade: %v", err)
 	}
-	djEngine := dj.NewEngine(cfg.DJ.FFmpeg, cfg.DJ.MusicDir,
-		&dj.VoiceOutput{Conn: b.VoiceConnection}, enc, cfg.DJ.Volume, djFade)
+	// The test channel (Settings page) stands in for Discord voice: while the
+	// bot is in it, the mixer runs into an output that discards the audio.
+	var testChannel bool
+	if _, err := db.GetSetting(context.Background(), db.SettingDJTestChannel, &testChannel); err != nil {
+		log.Printf("DJ: read test channel setting: %v", err)
+	}
+	b.SetTestChannelEnabled(testChannel)
+	djOut := &dj.SwitchOutput{
+		Real:    &dj.VoiceOutput{Conn: b.VoiceConnection},
+		Test:    &dj.NullOutput{},
+		UseTest: b.InTestChannel,
+	}
+	djEngine := dj.NewEngine(cfg.DJ.FFmpeg, cfg.DJ.MusicDir, djOut, enc, cfg.DJ.Volume, djFade)
 	djEngine.OnState = func(st dj.State) {
 		hub.Broadcast(map[string]interface{}{"type": "dj_state", "data": st}, nil)
 	}
@@ -115,6 +126,7 @@ func main() {
 	djSoundboard := dj.NewSoundboard(cfg.DJ.SoundboardDir, cfg.DJ.FFmpeg, djEngine)
 	djWaves := dj.NewWaveforms(cfg.DJ.FFmpeg, cfg.DJ.MusicDir)
 	djHandler := dj.NewHandler(djEngine, djLibrary, djSoundboard, djWaves)
+	djHandler.TestChannel = b
 	hub.Handle("dj.", djHandler.HandleWS)
 	djHandler.OnLibraryChanged = func() {
 		hub.Broadcast(map[string]interface{}{"type": "dj_library"}, nil)
