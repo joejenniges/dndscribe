@@ -119,6 +119,8 @@ export interface DjScene {
   loop: boolean;
   fadeSeconds: number | null;
   position: number;
+  /** Background image key, served at /api/dj/sfx/images/{key}; null = none. */
+  image: string | null;
 }
 
 export interface SfxTab {

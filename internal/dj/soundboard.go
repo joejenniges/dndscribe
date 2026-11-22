@@ -27,7 +27,7 @@ import (
 // Soundboard manages sound-effect files and pad images on disk. Layout:
 //
 //	<dir>/sounds/<key><ext>   one file per pad
-//	<dir>/images/<key><ext>   optional pad image
+//	<dir>/images/<key><ext>   optional pad and scene images
 //
 // Keys are random and server-generated; the client's file name is kept only
 // as a label. That keeps client input out of filesystem paths entirely,
@@ -193,7 +193,34 @@ var imageExts = map[string]string{
 	"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp",
 }
 
-// SetImage validates and stores a pad image, replacing any previous one.
+// SetImage stores a pad image, replacing any previous one.
+func (s *Soundboard) SetImage(ctx context.Context, padID int64, body io.Reader) (string, error) {
+	return s.setImage(ctx, body, func(key *string) (*string, error) { return db.SetSfxPadImage(ctx, padID, key) })
+}
+
+// SetSceneImage stores a scene's background image, replacing any previous one.
+func (s *Soundboard) SetSceneImage(ctx context.Context, sceneID int64, body io.Reader) (string, error) {
+	return s.setImage(ctx, body, func(key *string) (*string, error) { return db.SetDJSceneImage(ctx, sceneID, key) })
+}
+
+func (s *Soundboard) ClearSceneImage(ctx context.Context, sceneID int64) error {
+	old, err := db.SetDJSceneImage(ctx, sceneID, nil)
+	if err != nil {
+		return err
+	}
+	s.RemoveImage(old)
+	return nil
+}
+
+// RemoveImage deletes a stored image file; nil is a no-op.
+func (s *Soundboard) RemoveImage(key *string) {
+	if key != nil && reImageKey.MatchString(*key) {
+		os.Remove(s.imagePath(*key))
+	}
+}
+
+// setImage validates and stores an image, then calls save to record the new
+// key against its owner (which returns the key it replaced).
 //
 // Validation is by content, not the file name: the bytes must sniff as
 // PNG/JPEG/GIF/WebP, and PNG/JPEG/GIF must decode a header within the pixel
@@ -201,7 +228,7 @@ var imageExts = map[string]string{
 // served as a script-capable document. (WebP has no decoder in the standard
 // library; it is accepted on its signature and only ever served as
 // image/webp.)
-func (s *Soundboard) SetImage(ctx context.Context, padID int64, body io.Reader) (string, error) {
+func (s *Soundboard) setImage(ctx context.Context, body io.Reader, save func(*string) (*string, error)) (string, error) {
 	data, err := io.ReadAll(io.LimitReader(body, maxImageUploadBytes+1))
 	if err != nil {
 		return "", err
@@ -230,14 +257,12 @@ func (s *Soundboard) SetImage(ctx context.Context, padID int64, body io.Reader) 
 	if err := os.WriteFile(s.imagePath(key), data, 0o644); err != nil {
 		return "", err
 	}
-	old, err := db.SetSfxPadImage(ctx, padID, &key)
+	old, err := save(&key)
 	if err != nil {
 		os.Remove(s.imagePath(key))
 		return "", err
 	}
-	if old != nil {
-		os.Remove(s.imagePath(*old))
-	}
+	s.RemoveImage(old)
 	return key, nil
 }
 
@@ -254,7 +279,7 @@ func (s *Soundboard) ClearImage(ctx context.Context, padID int64) error {
 
 var reImageKey = regexp.MustCompile(`^[0-9a-f]{32}\.(png|jpg|gif|webp)$`)
 
-// ServeImage serves a stored pad image by key.
+// ServeImage serves a stored pad or scene image by key.
 func (s *Soundboard) ServeImage(w http.ResponseWriter, r *http.Request, key string) {
 	if !reImageKey.MatchString(key) {
 		http.NotFound(w, r)

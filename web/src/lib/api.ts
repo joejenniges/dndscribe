@@ -243,7 +243,7 @@ function putFile<T>(url: string, file: Blob, opts: PutOpts = {}): Promise<T> {
 const post = <T>(url: string, body?: unknown) =>
   request<T>(url, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) });
 
-type SceneInput = Omit<DjScene, 'id' | 'position'>;
+type SceneInput = Omit<DjScene, 'id' | 'position' | 'image'>;
 
 // Addresses another device can open this app on (shown as QR codes).
 export const connect = {
@@ -324,5 +324,7 @@ export const dj = {
       request<DjScene>(`/api/dj/scenes/${id}`, { method: 'PUT', body: JSON.stringify(s) }),
     delete: (id: number) => request<{ success: boolean }>(`/api/dj/scenes/${id}`, { method: 'DELETE' }),
     order: (ids: number[]) => post<{ success: boolean }>('/api/dj/scenes/order', { ids }),
+    setImage: (id: number, file: File) => putFile<{ image: string }>(`/api/dj/scenes/${id}/image`, file),
+    clearImage: (id: number) => request<{ success: boolean }>(`/api/dj/scenes/${id}/image`, { method: 'DELETE' }),
   },
 };

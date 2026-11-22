@@ -5,6 +5,7 @@
   import { addToast } from '$lib/stores/toast';
   import type { DjScene, DjTrack } from '$lib/types';
   import { SCENE_COLORS, FADE_OPTIONS, fmtMs } from './format';
+  import ColorPicker from './ColorPicker.svelte';
   import { folderName, folderDepth, folderStats, tracksIn, parentOf } from './library';
 
   let {
@@ -31,6 +32,22 @@
   let saving = $state(false);
   let confirmDelete = $state(false);
 
+  // Image. For an existing scene it uploads as soon as it's picked (like a
+  // pad image). A new scene has no id yet, so the file waits and uploads
+  // right after the scene is created.
+  let image = $state<string | null>(null);
+  let pendingFile = $state<File | null>(null);
+  let pendingUrl = $state<string | null>(null);
+  let imageBusy = $state(false);
+  let imageInput: HTMLInputElement | undefined = $state();
+  const previewUrl = $derived(pendingUrl ?? (image ? dj.sfx.imageUrl(image) : null));
+
+  function setPending(f: File | null) {
+    if (pendingUrl) URL.revokeObjectURL(pendingUrl);
+    pendingFile = f;
+    pendingUrl = f ? URL.createObjectURL(f) : null;
+  }
+
   // Seed the form each time the dialog opens.
   let seededFor: DjScene | null | undefined = undefined;
   $effect(() => {
@@ -47,8 +64,41 @@
     shuffle = scene?.shuffle ?? false;
     loop = scene?.loop ?? true;
     fade = scene?.fadeSeconds == null ? 'default' : String(scene.fadeSeconds);
+    image = scene?.image ?? null;
+    setPending(null);
     confirmDelete = false;
   });
+
+  async function pickImage(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    if (!scene) return setPending(file);
+    imageBusy = true;
+    try {
+      image = (await dj.scenes.setImage(scene.id, file)).image;
+      onsaved?.();
+    } catch (err) {
+      addToast(`Couldn't use that image: ${(err as Error).message}`, 'error');
+    } finally {
+      imageBusy = false;
+    }
+  }
+
+  async function clearImage() {
+    if (!scene) return setPending(null);
+    imageBusy = true;
+    try {
+      await dj.scenes.clearImage(scene.id);
+      image = null;
+      onsaved?.();
+    } catch (err) {
+      addToast(`Couldn't remove the image: ${(err as Error).message}`, 'error');
+    } finally {
+      imageBusy = false;
+    }
+  }
 
   async function save() {
     if (!name.trim()) return;
@@ -64,7 +114,17 @@
     };
     try {
       if (scene) await dj.scenes.update(scene.id, body);
-      else await dj.scenes.create(body);
+      else {
+        const created = await dj.scenes.create(body);
+        if (pendingFile) {
+          try {
+            await dj.scenes.setImage(created.id, pendingFile);
+          } catch (err) {
+            addToast(`Scene saved, but the image wasn't: ${(err as Error).message}`, 'error');
+          }
+          setPending(null);
+        }
+      }
       open = false;
       onsaved?.();
     } catch (e) {
@@ -134,12 +194,27 @@
 
     <div class="field">
       <span>Colour</span>
-      <div class="swatches" role="radiogroup" aria-label="Scene colour">
-        {#each SCENE_COLORS as c}
-          <button type="button" class="swatch" class:on={color === c} style:background={c}
-            role="radio" aria-checked={color === c} aria-label={c} onclick={() => (color = c)}></button>
-        {/each}
+      <ColorPicker bind:value={color} label="Scene colour" />
+    </div>
+
+    <div class="field">
+      <span>Image</span>
+      <div class="image-row">
+        <div class="preview" style:--scene-color={color}
+          style:background-image={previewUrl ? `url(${previewUrl})` : undefined} class:hasimg={!!previewUrl}>
+          <span>{name.trim() || 'Scene'}</span>
+        </div>
+        <div class="image-btns">
+          <button type="button" class="btn btn-sm" onclick={() => imageInput?.click()} disabled={imageBusy}>
+            {previewUrl ? 'Replace' : 'Upload image'}
+          </button>
+          {#if previewUrl}
+            <button type="button" class="btn-ghost btn-sm" onclick={clearImage} disabled={imageBusy}>Remove</button>
+          {/if}
+        </div>
+        <input bind:this={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" onchange={pickImage} hidden />
       </div>
+      <span class="tiny subtle">PNG, JPEG, GIF or WebP, up to 5 MB. Wide images suit the tile best.</span>
     </div>
 
     <label class="field">
@@ -175,9 +250,19 @@
 
 <style>
   .form { display: flex; flex-direction: column; gap: 14px; }
-  .swatches { display: flex; gap: 10px; flex-wrap: wrap; }
-  .swatch { width: 36px; height: 36px; border-radius: 50%; border: 2px solid transparent; padding: 0; }
-  .swatch.on { border-color: var(--text); box-shadow: 0 0 0 2px var(--canvas) inset; }
+  .image-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .image-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+  /* A small copy of the scene tile, so the colour and image read together. */
+  .preview {
+    position: relative; overflow: hidden; width: 176px; height: 92px; border-radius: var(--radius-lg);
+    display: flex; align-items: flex-end; padding: 8px 10px; font-weight: 700;
+    background: linear-gradient(135deg, color-mix(in srgb, var(--scene-color) 38%, var(--surface)), var(--surface));
+    background-size: cover; background-position: center;
+    border: 1px solid var(--border-strong); border-top: 4px solid var(--scene-color);
+  }
+  .preview.hasimg { color: #fff; }
+  .preview.hasimg::before { content: ''; position: absolute; inset: 0; background: linear-gradient(to top, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.05) 65%); }
+  .preview span { position: relative; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   input[type='range'] { accent-color: var(--accent); height: 28px; }
   .spacer { flex: 1; }
   .folders { list-style: none; margin: 0; padding: 4px 0; max-height: 260px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: var(--radius); }

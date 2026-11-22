@@ -5,7 +5,8 @@
   import { dj } from '$lib/api';
   import { addToast } from '$lib/stores/toast';
   import type { SfxPad, SfxTab } from '$lib/types';
-  import { SCENE_COLORS, fmtMs } from './format';
+  import { fmtMs } from './format';
+  import ColorPicker from './ColorPicker.svelte';
 
   let {
     open = $bindable(false),
@@ -110,14 +111,7 @@
 
       <div class="field">
         <span>Colour</span>
-        <div class="swatches" role="radiogroup" aria-label="Pad colour">
-          <button type="button" class="swatch none" class:on={color === ''} role="radio" aria-checked={color === ''}
-            aria-label="Default" onclick={() => (color = '')}></button>
-          {#each SCENE_COLORS as c}
-            <button type="button" class="swatch" class:on={color === c} style:background={c}
-              role="radio" aria-checked={color === c} aria-label={c} onclick={() => (color = c)}></button>
-          {/each}
-        </div>
+        <ColorPicker bind:value={color} label="Pad colour" allowNone />
       </div>
 
       <div class="field">
@@ -172,10 +166,6 @@
 <style>
   .form { display: flex; flex-direction: column; gap: 14px; }
   .file { margin: -8px 0 0; word-break: break-all; }
-  .swatches { display: flex; gap: 10px; flex-wrap: wrap; }
-  .swatch { width: 36px; height: 36px; border-radius: 50%; border: 2px solid transparent; padding: 0; }
-  .swatch.none { background: var(--surface-raised); border-color: var(--border-strong); }
-  .swatch.on { border-color: var(--text); box-shadow: 0 0 0 2px var(--canvas) inset; }
   .image-row { display: flex; align-items: center; gap: 14px; }
   .image-row img, .noimg { width: 72px; height: 72px; border-radius: var(--radius); object-fit: cover; border: 1px solid var(--border-strong); }
   .noimg { display: grid; place-items: center; background: var(--surface-raised); }

@@ -38,6 +38,10 @@ type DJScene struct {
 	Loop        bool     `json:"loop"`
 	FadeSeconds *float64 `json:"fadeSeconds"` // nil = use the global fade
 	Position    int      `json:"position"`
+	// ImageKey is an optional background image, stored with the soundboard
+	// images and served at /api/dj/sfx/images/{key}. Set only through the
+	// image endpoints, never by a scene save.
+	ImageKey *string `json:"image"`
 }
 
 func migrateDJ(ctx context.Context) error {
@@ -69,6 +73,7 @@ func migrateDJ(ctx context.Context) error {
 		// Folders replaced them; no install had real data in them.
 		`ALTER TABLE dj_scenes ADD COLUMN IF NOT EXISTS folders TEXT[] NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE dj_scenes DROP COLUMN IF EXISTS playlist_id`,
+		`ALTER TABLE dj_scenes ADD COLUMN IF NOT EXISTS image_key TEXT`,
 		`DROP TABLE IF EXISTS dj_playlist_tracks`,
 		`DROP TABLE IF EXISTS dj_playlists`,
 	}
@@ -154,13 +159,13 @@ func DeleteDJTracksUnder(ctx context.Context, folder string) error {
 
 // ---- Scenes ----
 
-const sceneCols = `id, name, folders, color, volume, shuffle, loop, fade_seconds, position`
+const sceneCols = `id, name, folders, color, volume, shuffle, loop, fade_seconds, position, image_key`
 
 func scanScene(row pgx.Row) (DJScene, error) {
 	var s DJScene
 	var vol float32
 	var fade *float32
-	err := row.Scan(&s.ID, &s.Name, &s.Folders, &s.Color, &vol, &s.Shuffle, &s.Loop, &fade, &s.Position)
+	err := row.Scan(&s.ID, &s.Name, &s.Folders, &s.Color, &vol, &s.Shuffle, &s.Loop, &fade, &s.Position, &s.ImageKey)
 	s.Volume = float64(vol)
 	if fade != nil {
 		f := float64(*fade)
@@ -218,9 +223,27 @@ func UpdateDJScene(ctx context.Context, s DJScene) (bool, error) {
 	return tag.RowsAffected() > 0, err
 }
 
-func DeleteDJScene(ctx context.Context, id int64) (bool, error) {
-	tag, err := pool.Exec(ctx, `DELETE FROM dj_scenes WHERE id = $1`, id)
-	return tag.RowsAffected() > 0, err
+// DeleteDJScene deletes a scene and returns its image key (if any) so the
+// caller can remove the file.
+func DeleteDJScene(ctx context.Context, id int64) (image *string, err error) {
+	err = pool.QueryRow(ctx, `DELETE FROM dj_scenes WHERE id = $1 RETURNING image_key`, id).Scan(&image)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	return image, err
+}
+
+// SetDJSceneImage sets (or clears, with nil) a scene's image and returns the
+// previous key so the caller can delete that file.
+func SetDJSceneImage(ctx context.Context, id int64, key *string) (old *string, err error) {
+	err = pool.QueryRow(ctx, `
+		UPDATE dj_scenes s SET image_key = $2
+		FROM (SELECT image_key FROM dj_scenes WHERE id = $1) prev
+		WHERE s.id = $1 RETURNING prev.image_key`, id, key).Scan(&old)
+	if err == pgx.ErrNoRows {
+		return nil, fmt.Errorf("scene not found")
+	}
+	return old, err
 }
 
 // ReorderDJScenes sets each scene's position to its index in ids.

@@ -339,8 +339,35 @@ func NewHandler(engine *Engine, library *Library, sb *Soundboard, waves *Wavefor
 		if !ok {
 			return
 		}
-		if _, err := db.DeleteDJScene(r.Context(), id); err != nil {
+		img, err := db.DeleteDJScene(r.Context(), id)
+		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		h.sb.RemoveImage(img)
+		h.changed()
+		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+	})
+	m.HandleFunc("PUT /api/dj/scenes/{id}/image", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		key, err := h.sb.SetSceneImage(r.Context(), id, r.Body)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		h.changed()
+		writeJSON(w, http.StatusOK, map[string]string{"image": key})
+	})
+	m.HandleFunc("DELETE /api/dj/scenes/{id}/image", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		if err := h.sb.ClearSceneImage(r.Context(), id); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		h.changed()

@@ -478,7 +478,9 @@
     position: relative; overflow: hidden; width: 100%; min-height: 84px; padding: 10px; text-align: left;
     display: flex; flex-direction: column; justify-content: flex-end; gap: 2px;
     border-radius: var(--radius-lg); border: 1px solid color-mix(in srgb, var(--pad-color) 45%, var(--border-strong));
-    background-color: color-mix(in srgb, var(--pad-color) 22%, var(--surface));
+    background-color: var(--surface);
+    /* Overridden by the inline image on pads that have one. */
+    background-image: linear-gradient(160deg, color-mix(in srgb, var(--pad-color) 42%, transparent), color-mix(in srgb, var(--pad-color) 12%, transparent));
     background-size: cover; background-position: center;
     color: var(--text); transition: transform 0.06s, box-shadow 0.15s;
   }
@@ -496,6 +498,8 @@
   .big .pad-label { font-size: 16px; }
   .pad-meta { font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
   .pad.hasimg .pad-meta { color: rgba(255, 255, 255, 0.8); }
+  .pad.hasimg { color: #fff; }
+  .pad.hasimg .pad-label { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8); }
   .bar { position: absolute !important; left: 0; bottom: 0; height: 4px; background: var(--pad-color); transition: width 0.1s linear; }
   .pad-move { position: absolute; top: 6px; right: 6px; display: flex; gap: 4px; z-index: 2; }
   .pad-move .icon-btn { width: 36px; height: 36px; background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: var(--radius); }

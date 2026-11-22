@@ -113,7 +113,9 @@
             class="scene"
             class:active={state === 'playing' || state === 'starting'}
             class:paused={state === 'paused'}
+            class:hasimg={!!s.image}
             style:--scene-color={s.color || 'var(--accent)'}
+            style:background-image={s.image ? `url(${dj.sfx.imageUrl(s.image)})` : undefined}
             onclick={() => tap(s)}
             disabled={pending === s.id || (!arranging && (!live || (!inVoice && s.folders.length > 0)))}
             tabindex={arranging ? -1 : 0}
@@ -165,32 +167,51 @@
   .scene-wrap { position: relative; }
   .scene {
     --scene-color: var(--accent);
-    width: 100%; min-height: 92px; padding: 14px 14px 12px; border-radius: var(--radius-lg); text-align: left;
+    position: relative; overflow: hidden;
+    width: 100%; min-height: 104px; padding: 14px 14px 12px; border-radius: var(--radius-lg); text-align: left;
     display: flex; flex-direction: column; justify-content: space-between; gap: 10px;
-    background: var(--surface); border: 1px solid var(--border-strong); color: var(--text);
+    background-color: var(--surface);
+    background-image: linear-gradient(135deg, color-mix(in srgb, var(--scene-color) 34%, transparent), color-mix(in srgb, var(--scene-color) 6%, transparent) 75%);
+    background-size: cover; background-position: center;
+    border: 1px solid color-mix(in srgb, var(--scene-color) 35%, var(--border-strong)); color: var(--text);
     border-top: 5px solid var(--scene-color);
-    transition: background 0.15s, border-color 0.15s, transform 0.08s;
+    transition: filter 0.15s, border-color 0.15s, transform 0.08s;
   }
-  .strip .scene { min-height: 68px; padding: 8px 12px; gap: 6px; }
+  /* Image tiles: darken toward the bottom so white text stays readable on
+     any picture, and tint faintly with the scene colour. */
+  .scene.hasimg { color: #fff; }
+  .scene.hasimg::before {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0.25) 55%, rgba(0, 0, 0, 0.05)),
+      linear-gradient(135deg, color-mix(in srgb, var(--scene-color) 22%, transparent), transparent 60%);
+  }
+  .scene > * { position: relative; }
+  .scene.hasimg .scene-name { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8); }
+  .scene.hasimg .scene-meta, .scene.hasimg .scene-flags { color: rgba(255, 255, 255, 0.85); }
+  .strip .scene { min-height: 76px; padding: 8px 12px; gap: 6px; }
   .strip { gap: 6px; }
   .strip header :global(.btn) { min-height: 32px; }
   .strip header :global(.section-title) { font-size: 14px; }
-  .scene:hover:not(:disabled) { background: var(--surface-hover); }
+  .scene:hover:not(:disabled) { filter: brightness(1.12); }
   .scene:active:not(:disabled) { transform: scale(0.985); }
   .scene.active {
-    background: color-mix(in srgb, var(--scene-color) 16%, var(--surface));
     border-color: var(--scene-color);
     box-shadow: 0 0 0 1px var(--scene-color), 0 6px 24px color-mix(in srgb, var(--scene-color) 25%, transparent);
   }
   .scene.paused { border-color: var(--scene-color); }
   .scene:disabled { opacity: 0.6; cursor: not-allowed; }
-  .scene.empty { border: 1px dashed var(--border-strong); color: var(--text-2); min-height: 96px; }
+  .scene.empty { border: 1px dashed var(--border-strong); color: var(--text-2); min-height: 96px; background-image: none; }
   /* Name pinned to the top, count and flags to the bottom, so every tile
      lines up the same whatever its contents. */
   .scene-name { font-size: 16px; font-weight: 700; line-height: 1.3; padding-right: 34px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .scene-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 18px; }
   .scene-meta { font-size: 13px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .scene.active .scene-meta { color: var(--scene-color); font-weight: 600; }
+  .scene.hasimg.active .scene-meta { color: #fff; }
+  .scene.active::after {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background: color-mix(in srgb, var(--scene-color) 14%, transparent);
+  }
   .scene-flags { display: flex; gap: 6px; color: var(--text-2); flex-shrink: 0; }
   .scene.active .scene-flags { color: var(--scene-color); }
   .scene-flags svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
@@ -199,4 +220,5 @@
   .arrange { position: absolute; top: 8px; right: 6px; display: flex; gap: 4px; }
   .arrange .icon-btn { width: 40px; height: 40px; background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: var(--radius); }
   .scene-edit { position: absolute; top: 8px; right: 6px; width: 40px; height: 40px; font-size: 20px; color: var(--text-2); }
+  .scene-wrap:has(.hasimg) .scene-edit { color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9); }
 </style>
