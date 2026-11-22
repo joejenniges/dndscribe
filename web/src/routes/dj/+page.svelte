@@ -471,7 +471,7 @@
     <div>
       {#if overSoundboard}
         <strong>Drop to add sound effects</strong>
-        <span>They go into the open soundboard tab</span>
+        <span>Files go into the open tab; each folder becomes a tab</span>
       {:else}
         <strong>Drop to upload music</strong>
         <span>You'll choose the folder next. Drop on the soundboard for effects.</span>

@@ -106,6 +106,8 @@ Errors come back in the ack (`ok:false`, `error` is a sentence for a toast), for
 
 ## HTTP
 
+Soundboard uploads ("+ Add", "+ Folder", or a drop on the soundboard) put loose files in the open tab; a file inside a folder goes into a tab named after its own folder (case-insensitive match on an existing tab, otherwise a new one). Nested folders flatten to their last component, since tabs don't nest. This is client-side: the upload route still takes one file and a tab id.
+
 Editing and uploads stay on HTTP under `/api/dj/` (tracks, folders, files, scenes, soundboard tabs/pads/images, waveforms, settings). Scenes and pads can each have a background image (`PUT`/`DELETE /api/dj/scenes/{id}/image`, `/api/dj/sfx/pads/{id}/image`, raw body, PNG/JPEG/GIF/WebP up to 5 MB, validated by content). Both are stored under `<soundboard dir>/images/` with random keys and served from `/api/dj/sfx/images/{key}`; saving a scene or pad never changes its image, and deleting one removes its file. The older transport routes (`/api/dj/play`, `pause`, `resume`, `next`, `seek`, `stop`, `volume`, `tone`) still work and act on the on-air deck.
 
 `GET /api/connect` lists the addresses a tablet can open the app on (Tailscale name and IP, home network); `GET /api/connect/qr?url=` returns a QR PNG for one of them.

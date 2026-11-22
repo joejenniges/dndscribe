@@ -15,7 +15,7 @@
   import PadEditor from './PadEditor.svelte';
   import Fader from './Fader.svelte';
   import { SCENE_COLORS, fmtMs } from './format';
-  import { isAudioName, AUDIO_EXTS, type PickedFile } from './library';
+  import { isAudioName, AUDIO_EXTS, fromFileList, type PickedFile } from './library';
 
   let {
     st,
@@ -262,11 +262,25 @@
   }
 
   // ---- Upload ----
+  // Files go into the open tab. Folders (picked with "Add folder" or
+  // dropped) become tabs: each file goes into a tab named after the folder
+  // it sits in, reusing a tab of that name if there is one, so uploading
+  // "SFX/Combat" and "SFX/Tavern" makes Combat and Tavern tabs. Only the
+  // file's own folder counts; the soundboard has no nested tabs.
   let fileInput: HTMLInputElement | undefined = $state();
+  let folderInput: HTMLInputElement | undefined = $state();
   let uploadTotal = $state(0);
   let uploadDone = $state(0);
 
-  /** Upload effects into the current tab (also called by the page on a drop). */
+  /** The tab a picked file belongs in: its folder's name, or null for the
+   *  open tab (a loose file). */
+  function folderOf(f: PickedFile): string | null {
+    const parts = f.rel.split('/');
+    return parts.length > 1 ? parts[parts.length - 2].trim() : null;
+  }
+  const keyOf = (f: PickedFile) => folderOf(f)?.toLowerCase() ?? null;
+
+  /** Upload effects (also called by the page on a drop). */
   export async function addFiles(files: PickedFile[]) {
     const audio = files.filter((f) => isAudioName(f.file.name));
     const skipped = files.length - audio.length;
@@ -278,15 +292,33 @@
       addToast('Wait for the current upload to finish', 'error');
       return;
     }
-    let tabId = activeTabId;
+    // Resolve every destination tab before uploading anything.
+    const tabFor = new Map<string | null, number>();
+    const created: string[] = [];
     try {
-      if (tabId === null) {
-        const t = await dj.sfx.tabs.create('Effects');
-        tabId = t.id;
-        selectTab(t.id);
+      // First spelling wins when folders differ only by case.
+      const names = new Map<string | null, string | null>();
+      for (const f of audio) if (!names.has(keyOf(f))) names.set(keyOf(f), folderOf(f));
+      for (const [key, name] of names) {
+        if (name === null) {
+          let id = activeTabId;
+          if (id === null) {
+            id = (await dj.sfx.tabs.create('Effects')).id;
+            created.push('Effects');
+          }
+          tabFor.set(null, id);
+          continue;
+        }
+        const have = tabs.find((t) => t.title.trim().toLowerCase() === key);
+        if (have) tabFor.set(key, have.id);
+        else {
+          tabFor.set(key, (await dj.sfx.tabs.create(name)).id);
+          created.push(name);
+        }
       }
     } catch (e) {
       addToast(`Couldn't create a tab: ${(e as Error).message}`, 'error');
+      load();
       return;
     }
     uploadTotal = audio.length;
@@ -297,7 +329,7 @@
       while (next < audio.length) {
         const f = audio[next++];
         try {
-          await dj.sfx.upload(tabId!, f.file);
+          await dj.sfx.upload(tabFor.get(keyOf(f))!, f.file);
         } catch (e) {
           failures.push((e as Error).message);
         }
@@ -307,15 +339,20 @@
     await Promise.all([worker(), worker()]);
     const ok = audio.length - failures.length;
     const extra = skipped ? `, ${skipped} not audio` : '';
+    const tabsNote = created.length ? ` (new tab${created.length === 1 ? '' : 's'}: ${created.join(', ')})` : '';
     if (failures.length) addToast(`Added ${ok}, ${failures.length} failed: ${failures[0]}${extra}`, 'error');
-    else addToast(`Added ${ok} sound${ok === 1 ? '' : 's'}${extra}`, 'success');
+    else addToast(`Added ${ok} sound${ok === 1 ? '' : 's'}${tabsNote}${extra}`, 'success');
     uploadTotal = uploadDone = 0;
-    load();
+    // Show where they went: the first folder's tab, or the open one.
+    const first = tabFor.get(keyOf(audio[0]));
+    await load();
+    if (first !== undefined && first !== activeTabId) selectTab(first);
   }
 
   function onPick(e: Event) {
     const input = e.currentTarget as HTMLInputElement;
-    const files = Array.from(input.files ?? []).map((file) => ({ file, rel: file.name }));
+    // webkitRelativePath is set for a folder pick ("SFX/Combat/hit.wav").
+    const files = fromFileList(input.files);
     input.value = '';
     addFiles(files);
   }
@@ -337,7 +374,10 @@
       <button class="btn btn-sm" onclick={() => fileInput?.click()} disabled={uploadTotal > 0} title="Upload sound effects into this tab">
         {uploadTotal > 0 ? `${uploadDone}/${uploadTotal}` : '+ Add'}
       </button>
+      <button class="btn btn-sm" onclick={() => folderInput?.click()} disabled={uploadTotal > 0}
+        title="Upload a folder of sound effects: each folder becomes a tab">+ Folder</button>
       <input bind:this={fileInput} type="file" multiple accept={AUDIO_EXTS.map((e) => '.' + e).join(',')} onchange={onPick} hidden />
+      <input bind:this={folderInput} type="file" webkitdirectory onchange={onPick} hidden />
     </div>
   </header>
 
@@ -385,7 +425,7 @@
     {#if loaded && tabs.length === 0}
       <div class="empty">
         <p>No sound effects yet.</p>
-        <p class="subtle small">Press + Add, or drop audio files on the soundboard.</p>
+        <p class="subtle small">Press + Add or + Folder, or drop files or folders here. Each folder becomes a tab.</p>
       </div>
     {:else}
       <div class="grid" class:editing={editMode}>
