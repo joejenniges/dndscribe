@@ -32,16 +32,25 @@ func TestFadeToDeckMovesOnlyTheFader(t *testing.T) {
 	}
 }
 
-// With nothing playing the fader just moves (a glide would never advance),
-// and a glide never stays "in progress" once everything has stopped.
+// With nothing playing the glide still runs at the fade speed (the engine
+// tick steps it), and a glide never stays "in progress" once everything has
+// stopped.
 func TestFadeToDeckWhenSilent(t *testing.T) {
 	e, out, _ := newTestEngine()
 	e.SetAutoDJ(false)
 	if err := e.FadeToDeck(1); err != nil {
 		t.Fatal(err)
 	}
+	if tr := e.State().Transition; tr == nil || tr.Kind != "manual" {
+		t.Fatalf("idle: transition %+v", tr)
+	}
+	frames(e, out, 25)
+	if x := e.State().Crossfader; x < 0.3 || x > 0.7 {
+		t.Fatalf("idle halfway: fader %.2f", x)
+	}
+	frames(e, out, 40)
 	if st := e.State(); st.Crossfader != 1 || st.Transition != nil {
-		t.Fatalf("idle: fader %.2f transition %+v", st.Crossfader, st.Transition)
+		t.Fatalf("idle after: fader %.2f transition %+v", st.Crossfader, st.Transition)
 	}
 	a, _ := constItem("a", 1000, 1000, 0)
 	_ = e.openOnDeck(0, &a)

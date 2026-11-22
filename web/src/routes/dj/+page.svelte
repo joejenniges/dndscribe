@@ -109,7 +109,7 @@
   let workW = $state(1400);
 
   function savePanes() {
-    local.set(PANES_KEY, JSON.stringify({ leftW, rightW, leftOpen, rightOpen, consoleH, queueCollapsed }));
+    local.set(PANES_KEY, JSON.stringify({ leftW, rightW, leftOpen, rightOpen, deckH: consoleH, queueFolded: queueCollapsed }));
   }
 
   // Below ~1340px there isn't room for three panes and a usable deck
@@ -166,28 +166,25 @@
     savePanes();
   }
   // ---- Centre column: console height and queue collapse, per device ----
-  // The decks and mixer sit at their natural height (or taller if dragged
-  // taller with the splitter); the queue takes the rest. Collapsed, the queue
-  // is a single bar and the console takes the room. The queue starts
-  // collapsed when it's empty (unless this device chose otherwise), since an
-  // empty list is a lot of wasted height.
-  const MIN_QUEUE = 140;
-  let consoleH = $state<number | null>(saved.consoleH ?? null);
+  // Waveforms, then decks + mixer at their compact natural height (about
+  // 200-240px), then the queue taking all the remaining height. The decks
+  // never grow with the window: extra height belongs to the queue. The
+  // splitter can make the console a little taller (up to MAX_CONSOLE), and
+  // the queue folds to a bar only when the user folds it.
+  // (Saved as deckH/queueFolded: older builds saved consoleH and an
+  // auto-folded queue under other names, which are deliberately ignored.)
+  const MIN_QUEUE = 160;
+  const MIN_CONSOLE = 180, MAX_CONSOLE = 360;
+  let consoleH = $state<number | null>(saved.deckH ?? null);
   let consoleEl: HTMLDivElement | undefined = $state();
-  let queueCollapsed = $state<boolean>(saved.queueCollapsed ?? false);
-  let queueSeeded = saved.queueCollapsed !== undefined;
-  $effect(() => {
-    if (queueSeeded || !st) return;
-    queueSeeded = true;
-    queueCollapsed = (st.queueTotal ?? 0) === 0;
-  });
+  let queueCollapsed = $state<boolean>(saved.queueFolded ?? false);
   let centerH = $state(800);
   let wavesH = $state(140);
   // Tallest the console may get while leaving the queue its minimum.
-  const maxConsole = $derived(Math.max(200, centerH - wavesH - MIN_QUEUE - 36));
+  const maxConsole = $derived(Math.max(MIN_CONSOLE, Math.min(MAX_CONSOLE, centerH - wavesH - MIN_QUEUE - 36)));
   function setConsole(h: number) {
     // CSS min-height: min-content keeps it from going under its content.
-    consoleH = Math.max(160, Math.min(maxConsole, Math.round(h)));
+    consoleH = Math.max(MIN_CONSOLE, Math.min(maxConsole, Math.round(h)));
   }
   let vdrag: { startY: number; start: number } | null = null;
   function vDown(e: PointerEvent) {
@@ -384,8 +381,8 @@
             <DeckWave {st} deck={0} overviewOnly lane {live} />
             <DeckWave {st} deck={1} overviewOnly lane {live} />
           </div>
-          <div class="console" bind:this={consoleEl} class:fill={queueCollapsed}
-            style:height={!queueCollapsed && !stacked && consoleH ? `${Math.min(consoleH, maxConsole)}px` : null}>
+          <div class="console" bind:this={consoleEl}
+            style:height={!stacked && consoleH ? `${Math.min(consoleH, maxConsole)}px` : null}>
             <DeckPanel {st} deck={0} {live} />
             <Mixer {st} {live} />
             <DeckPanel {st} deck={1} {live} />
@@ -393,7 +390,7 @@
           {#if !queueCollapsed && !stacked}
             <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
             <div class="vgutter" role="separator" aria-orientation="horizontal" aria-label="Resize decks and queue (Home: natural height)"
-              aria-valuemin={160} aria-valuemax={maxConsole} aria-valuenow={consoleH ?? undefined} tabindex="0"
+              aria-valuemin={MIN_CONSOLE} aria-valuemax={maxConsole} aria-valuenow={consoleH ?? undefined} tabindex="0"
               onpointerdown={vDown} onpointermove={vMove} onpointerup={vUp} onpointercancel={vUp} onkeydown={vKey}></div>
           {/if}
           <div class="qwrap" class:collapsed={queueCollapsed}>
@@ -544,27 +541,32 @@
   /* Scrolls only when the decks, mixer and the queue's minimum don't fit
      (short windows, or the mixer stacked under the decks). */
   .center { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 12px; container-type: inline-size; overflow-y: auto; overscroll-behavior: contain; }
-  .waves { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
-  /* Decks and mixer take whatever height the queue leaves; their contents
-     stay centred rather than stretching. */
+  .waves { padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+  /* Decks and mixer: content height, never stretched by a tall window (the
+     queue below takes the spare height). Cards in the row share the tallest
+     one's height; their contents sit at the top. */
   .console {
-    display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 0.8fr) minmax(0, 1fr); gap: 12px;
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, 0.8fr) minmax(0, 1fr); gap: 12px;
     flex: 0 0 auto; min-height: min-content; align-items: stretch;
   }
-  .console.fill { flex: 1 1 auto; }
-  .console > :global(.deck) { justify-content: center; }
   .vgutter {
     flex-shrink: 0; height: 10px; margin: -8px 0; cursor: row-resize; touch-action: none; position: relative; border-radius: 4px;
   }
   .vgutter::after { content: ''; position: absolute; left: 50%; top: 50%; width: 48px; height: 4px; transform: translate(-50%, -50%); border-radius: 2px; background: var(--border-strong); }
   .vgutter:hover::after, .vgutter:focus-visible::after { background: var(--accent); }
   .vgutter:focus-visible { outline: none; }
-  .qwrap { flex: 1 1 0; display: flex; min-height: 140px; }
+  .qwrap { flex: 1 1 0; display: flex; min-height: 160px; }
   .qwrap.collapsed { flex: 0 0 auto; min-height: 0; }
   .qwrap :global(.qp) { flex: 1; }
   @container (max-width: 820px) {
     .console { grid-template-columns: 1fr 1fr; }
     .console > :global(.mixer) { grid-column: 1 / -1; order: 3; }
+    /* Under the decks the mixer runs across as a short strip (crossfader,
+       master, buttons side by side) so the queue keeps its height. */
+    .console > :global(.mixer) { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 18px; }
+    .console > :global(.mixer .xf) { flex: 3 1 300px; }
+    .console > :global(.mixer .master) { flex: 2 1 200px; }
+    .console > :global(.mixer .actions) { flex: 1 1 200px; }
   }
   .gcol, .rail { position: relative; }
   .gutter { position: absolute; inset: 0; cursor: col-resize; touch-action: none; }

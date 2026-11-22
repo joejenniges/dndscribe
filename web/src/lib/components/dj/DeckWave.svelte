@@ -404,9 +404,9 @@
   canvas { display: block; width: 100%; }
   .overview { height: 30px; }
   .tall .overview { height: 46px; }
-  .lane .overview { height: 54px; }
+  .lane .overview { height: 40px; }
   .lane .overview-wrap { background: var(--surface-sunken); border-radius: var(--radius-sm); }
-  .lane .tag { width: 30px; height: 30px; font-size: 14px; }
+  .lane .tag { width: 26px; height: 26px; font-size: 13px; }
   .lane .time { font-size: 13px; min-width: 96px; }
   .scroll { height: 64px; background: var(--surface-sunken); border-radius: var(--radius-sm); }
   .seekable { touch-action: none; user-select: none; }

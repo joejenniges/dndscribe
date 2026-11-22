@@ -258,6 +258,7 @@ func (e *Engine) tick(buf []byte) {
 				e.notify()
 			}
 		}
+		e.idleGlideLocked()
 		return
 	}
 
@@ -305,18 +306,28 @@ func (e *Engine) musicPlayingLocked() bool {
 	return e.decks[0].playing || e.decks[1].playing || e.decks[0].run > 0 || e.decks[1].run > 0 || e.auto != nil
 }
 
+// idleGlideLocked advances a crossfader glide by one frame while nothing is
+// being mixed (no voice connection, or nothing playing). The mixer normally
+// steps it per mixed frame; without this it would hang half-done, or have to
+// jump, and the fader is meant to visibly move at the fade speed either way.
+// Called once per 20ms tick, so it keeps real time.
+func (e *Engine) idleGlideLocked() {
+	a := e.auto
+	if a == nil {
+		return
+	}
+	a.pos++
+	x := a.from + (a.target-a.from)*math.Min(1, float64(a.pos)/float64(max(1, a.frames)))
+	e.xTarget, e.xfade = x, x
+	e.finishAutoLocked()
+}
+
 // mixFrameLocked produces one frame. active=false means there is nothing to
 // play and the caller should go quiet.
 func (e *Engine) mixFrameLocked() ([]int16, bool) {
 	musicOn := e.decks[0].sounding() || e.decks[1].sounding()
 	if !musicOn && len(e.sfx) == 0 {
-		// Nothing is mixed while silent, so a crossfader glide would hang
-		// here half-done (both decks paused mid-fade). Nobody hears the
-		// fader move in silence: finish it.
-		if a := e.auto; a != nil {
-			a.pos = a.frames
-			e.finishAutoLocked()
-		}
+		e.idleGlideLocked()
 		return nil, false
 	}
 

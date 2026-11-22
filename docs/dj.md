@@ -87,7 +87,7 @@ Positions are not streamed. Each deck has `positionMs` sampled at `at` (server u
 | `mix.master` / `mix.sfxGain` | `value` 0..1 |
 | `mix.autoDJ` | `on` |
 | `mix.next` / `mix.stopAll` | none |
-| `mix.fadeTo` | `deck`: glide the crossfader to that deck's side over the global fade. Fader only: never starts, stops or unloads a deck (the A/B buttons by the crossfader, and X). Set at once when nothing is playing. |
+| `mix.fadeTo` | `deck`: glide the crossfader to that deck's side over the global fade. Fader only: never starts, stops or unloads a deck (the A/B buttons by the crossfader, and X). Glides at the same speed when nothing is playing or the bot is not in voice (the engine tick steps it). |
 | `scene.play` | `sceneId` |
 | `folder.play` | `folder` (music-dir relative, "" = all), optional `trackId` to start at |
 | `track.play` | `trackId` (crossfade to it now; the queue carries on after) |
@@ -124,4 +124,4 @@ Settings page toggle (`testChannel` in `/api/dj/settings`, saved as `dj.test_cha
 
 ## Deck play and the crossfader
 
-Crossfades are manual. `deck.play` never moves the crossfader, so a deck started on the far side plays silently until faded in, as on a hardware mixer; the deck panel says "Faded out" and the status bar points it out. The client decides "On air" from the deck playing *and* its crossfader weight (`deckHeard` in `web/src/lib/dj/live.ts`); the server's `onAir` ignores the fader. Scene changes, Auto DJ, Next and "Play now" from the library are the automated transitions that move the fader themselves. A glide in progress when everything goes silent is finished rather than left hanging.
+Crossfades are manual. `deck.play` never moves the crossfader, so a deck started on the far side plays silently until faded in, as on a hardware mixer; the deck panel says "Faded out" and the status bar points it out. The client decides "On air" from the deck playing *and* its crossfader weight (`deckHeard` in `web/src/lib/dj/live.ts`); the server's `onAir` ignores the fader. Scene changes, Auto DJ, Next and "Play now" from the library are the automated transitions that move the fader themselves. A glide keeps moving in real time when everything is silent or the bot is not in voice (`idleGlideLocked`), so the fader never jumps and never hangs half-done.

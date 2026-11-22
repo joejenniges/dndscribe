@@ -1,6 +1,7 @@
 <script lang="ts">
   // Mixer: crossfader between the decks, master volume and level, Auto DJ
-  // and Next.
+  // and Next. Compact on purpose (no title row; the glide status replaces
+  // the fader readout) so the deck row stays ~200-240px tall.
   //
   // Crossfades are manual. The A and B buttons glide the fader to that side
   // over the global fade time (mix.fadeTo); it only moves the fader, never
@@ -69,13 +70,6 @@
 {/snippet}
 
 <section class="mixer card" class:strip class:stale={!live} aria-label="Mixer">
-  {#if !strip}
-    <header>
-      <h3>Mixer</h3>
-      {#if tr}<span class="glide">{trLabel}</span>{/if}
-    </header>
-  {/if}
-
   <div class="xf">
     <div class="xf-row">
       {@render side(0)}
@@ -84,12 +78,12 @@
       {@render side(1)}
     </div>
     <div class="xf-read" aria-hidden="true">
-      {#if strip && tr}<span class="glide">{trLabel}</span>{:else}{xfLabel(xf)}{/if}
+      {#if tr}<span class="glide">{trLabel}</span>{:else}{xfLabel(xf)}{/if}
     </div>
   </div>
 
   <div class="master">
-    <span class="lbl">Master</span>
+    <span class="lbl" aria-hidden="true">Master</span>
     <div class="master-ctl">
       <Fader value={st?.volume ?? 0.5} cmd="mix.master" args={(v) => ({ value: v })} label="Master volume"
         disabled={!live} format={pct} color="var(--accent)" />
@@ -113,22 +107,20 @@
 
 <style>
   .mixer {
-    padding: 12px 14px; display: flex; flex-direction: column; gap: 14px; min-width: 0; justify-content: space-between;
+    padding: 10px 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0;
     background: linear-gradient(180deg, var(--surface-raised), var(--surface));
   }
   .stale { opacity: 0.6; }
-  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 22px; }
-  h3 { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-2); }
   .glide { font-size: 12px; font-weight: 700; color: var(--warning); white-space: nowrap; }
 
   .xf { display: flex; flex-direction: column; gap: 4px; }
   .xf-row { display: flex; align-items: center; gap: 8px; }
   .xf-row :global(.fader) { flex: 1; }
-  .xf-read { text-align: center; font-size: 13px; font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; min-height: 18px; }
+  .xf-read { text-align: center; font-size: 13px; font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; min-height: 18px; margin-top: -4px; }
 
   .side {
     --c: var(--deck-a);
-    flex-shrink: 0; width: 40px; height: 40px; border-radius: 8px; padding: 0;
+    flex-shrink: 0; width: 36px; height: 40px; border-radius: 8px; padding: 0;
     font-weight: 800; font-size: 15px; color: var(--c);
     background: color-mix(in srgb, var(--c) 12%, var(--surface-raised));
     border: 1px solid color-mix(in srgb, var(--c) 45%, var(--border-strong));
@@ -142,12 +134,12 @@
   @media (prefers-reduced-motion: reduce) { .side.gliding { animation: none; box-shadow: 0 0 0 2px var(--c); } }
   .side:disabled { opacity: 0.5; cursor: not-allowed; }
 
-  .master { display: flex; flex-direction: column; gap: 4px; }
+  .master { display: flex; align-items: center; gap: 10px; }
   .lbl { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
-  .master-ctl { display: flex; flex-direction: column; gap: 2px; }
+  .master-ctl { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 
-  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-  .actions .btn { flex: 1; min-height: 44px; justify-content: center; gap: 8px; display: inline-flex; align-items: center; }
+  .actions { display: flex; gap: 8px; }
+  .actions .btn { flex: 1 1 0; min-width: 0; padding: 0 8px; white-space: nowrap; min-height: 40px; justify-content: center; gap: 6px; display: inline-flex; align-items: center; }
   .actions svg { width: 16px; height: 16px; fill: currentColor; }
   .toggle .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); }
   .toggle.on { border-color: var(--success); color: var(--success); }
@@ -158,6 +150,6 @@
   .strip .xf { flex: 3 1 360px; }
   .strip .side { width: 52px; height: 52px; font-size: 18px; }
   .strip .master { flex: 1 1 200px; }
-  .strip .actions { flex: 0 1 auto; }
+  .strip .actions { flex: 0 1 auto; flex-wrap: wrap; }
   .strip .actions .btn { min-height: 52px; min-width: 110px; }
 </style>

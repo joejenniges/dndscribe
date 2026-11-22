@@ -561,10 +561,9 @@ func (e *Engine) FadeToDeck(i int) error {
 	defer e.mu.Unlock()
 	target := deckSide(i)
 	frames := secondsToFrames(e.fadeSeconds)
-	// The mixer only advances a glide while it's mixing: with no voice
-	// connection, or nothing playing, it would sit still. Nothing is heard
-	// then anyway, so just set it.
-	if !e.connected || frames <= 0 || !(e.decks[0].sounding() || e.decks[1].sounding()) {
+	// The glide runs at the fade speed even in silence or with no voice
+	// connection (the engine tick steps it then; see idleGlideLocked).
+	if frames <= 0 {
 		e.auto = nil
 		e.xTarget, e.xfade = target, target
 		e.notify()
