@@ -29,6 +29,8 @@ type Handler struct {
 
 	changeMu    sync.Mutex
 	changeTimer *time.Timer
+
+	acks ackCache // recent WebSocket command results, by id
 }
 
 // maxUploadBytes caps one uploaded file. Generous: an hour-long FLAC
@@ -80,7 +82,10 @@ func NewHandler(engine *Engine, library *Library, sb *Soundboard, waves *Wavefor
 		writeJSON(w, http.StatusOK, h.engine.State())
 	})
 	m.HandleFunc("POST /api/dj/next", func(w http.ResponseWriter, r *http.Request) {
-		h.engine.Next()
+		if err := h.engine.Next(); err != nil {
+			writePlayErr(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, h.engine.State())
 	})
 	m.HandleFunc("POST /api/dj/volume", func(w http.ResponseWriter, r *http.Request) {

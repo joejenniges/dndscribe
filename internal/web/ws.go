@@ -45,6 +45,11 @@ type wsClient struct {
 	conn       *websocket.Conn
 	send       chan []byte
 	campaignID *int64
+
+	// Presence, from the client's "hello": what kind of device and which
+	// page. Informational only; no device has more control than another.
+	device string
+	page   string
 }
 
 // Hub maintains the set of active WebSocket clients and broadcasts messages.
@@ -55,6 +60,23 @@ type Hub struct {
 	unregister chan *wsClient
 	broadcast  chan broadcastMsg
 	initFunc   InitMessageFunc
+
+	// handlers run client messages by type prefix ("dj."); the returned
+	// value is sent back to that client only (an acknowledgement).
+	handlers map[string]MessageHandler
+}
+
+// MessageHandler handles one client message and returns a reply for that
+// client, or nil.
+type MessageHandler func(raw []byte) any
+
+// Handle registers fn for client messages whose type starts with prefix.
+// Call before Run.
+func (h *Hub) Handle(prefix string, fn MessageHandler) {
+	if h.handlers == nil {
+		h.handlers = map[string]MessageHandler{}
+	}
+	h.handlers[prefix] = fn
 }
 
 type broadcastMsg struct {
@@ -91,11 +113,16 @@ func (h *Hub) Run() {
 
 		case client := <-h.unregister:
 			h.mu.Lock()
-			if _, ok := h.clients[client]; ok {
+			_, ok := h.clients[client]
+			announced := ok && client.device != ""
+			if ok {
 				delete(h.clients, client)
 				close(client.send)
 			}
 			h.mu.Unlock()
+			if announced {
+				go h.broadcastPresence()
+			}
 
 		case msg := <-h.broadcast:
 			h.mu.RLock()
@@ -154,6 +181,9 @@ func (h *Hub) readPump(client *wsClient) {
 		client.conn.Close()
 	}()
 
+	// Commands are small; this bounds what a misbehaving page can make us
+	// buffer.
+	client.conn.SetReadLimit(64 << 10)
 	for {
 		_, message, err := client.conn.ReadMessage()
 		if err != nil {
@@ -166,6 +196,8 @@ func (h *Hub) readPump(client *wsClient) {
 		var msg struct {
 			Type       string `json:"type"`
 			CampaignID *int64 `json:"campaignId"`
+			Device     string `json:"device"`
+			Page       string `json:"page"`
 		}
 		if err := json.Unmarshal(message, &msg); err != nil {
 			continue
@@ -176,8 +208,68 @@ func (h *Hub) readPump(client *wsClient) {
 			h.mu.Lock()
 			client.campaignID = msg.CampaignID
 			h.mu.Unlock()
+		case "hello":
+			h.mu.Lock()
+			client.device = clip(msg.Device, 16)
+			client.page = clip(msg.Page, 32)
+			h.mu.Unlock()
+			h.broadcastPresence()
+		default:
+			for prefix, fn := range h.handlers {
+				if strings.HasPrefix(msg.Type, prefix) {
+					if reply := fn(message); reply != nil {
+						h.sendTo(client, reply)
+					}
+					break
+				}
+			}
 		}
 	}
+}
+
+func clip(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}
+
+// sendTo queues msg for one client, unless it has gone away (its send
+// channel is closed under the hub lock when it unregisters).
+func (h *Hub) sendTo(client *wsClient, msg any) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("WebSocket reply marshal error: %v", err)
+		return
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if _, ok := h.clients[client]; !ok {
+		return
+	}
+	select {
+	case client.send <- data:
+	default:
+	}
+}
+
+// PresenceClient is one connected device, as it described itself.
+type PresenceClient struct {
+	Device string `json:"device"` // desktop, tablet, phone
+	Page   string `json:"page"`
+}
+
+// broadcastPresence tells everyone which devices are connected.
+func (h *Hub) broadcastPresence() {
+	h.mu.RLock()
+	list := []PresenceClient{}
+	for c := range h.clients {
+		if c.device != "" {
+			list = append(list, PresenceClient{Device: c.device, Page: c.page})
+		}
+	}
+	h.mu.RUnlock()
+	h.Broadcast(map[string]any{"type": "presence", "data": map[string]any{"clients": list}}, nil)
 }
 
 // writePump writes messages to the WebSocket client from its send channel.

@@ -86,11 +86,12 @@ func TestSfxDifferentPadsOverlapAndRampIn(t *testing.T) {
 
 func TestSfxPlaysWhileMusicPausedAndKeepsMusicPosition(t *testing.T) {
 	e, out, enc := newTestEngine()
-	_ = e.PlayTone(5)
+	music, _ := constItem("music", 500, 1000, 0)
+	_ = e.startNow(music, 0, "track")
 	frames(e, out, 5)
 	e.SetPaused(true)
 	frames(e, out, 20) // ramp out, then silent
-	pos := e.prog.cur.framesPlayed
+	pos := e.decks[0].v.framesPlayed
 	n := len(enc.frames)
 
 	_ = e.TriggerPad(1, "A", constPCM(1000, 5), 1, "")
@@ -98,7 +99,7 @@ func TestSfxPlaysWhileMusicPausedAndKeepsMusicPosition(t *testing.T) {
 	if len(enc.frames)-n != 5 {
 		t.Fatalf("effect sent %d frames while music paused, want 5", len(enc.frames)-n)
 	}
-	if got := e.prog.cur.framesPlayed; got != pos {
+	if got := e.decks[0].v.framesPlayed; got != pos {
 		t.Fatalf("music advanced from %d to %d while paused", pos, got)
 	}
 	if !e.State().Paused {

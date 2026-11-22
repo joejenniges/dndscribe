@@ -108,10 +108,14 @@ func main() {
 	djEngine.OnState = func(st dj.State) {
 		hub.Broadcast(map[string]interface{}{"type": "dj_state", "data": st}, nil)
 	}
+	djEngine.OnMeters = func(m dj.Meters) {
+		hub.Broadcast(map[string]interface{}{"type": "dj_meters", "data": m}, nil)
+	}
 	djLibrary := dj.NewLibrary(cfg.DJ.FFmpeg, cfg.DJ.MusicDir)
 	djSoundboard := dj.NewSoundboard(cfg.DJ.SoundboardDir, cfg.DJ.FFmpeg, djEngine)
 	djWaves := dj.NewWaveforms(cfg.DJ.FFmpeg, cfg.DJ.MusicDir)
 	djHandler := dj.NewHandler(djEngine, djLibrary, djSoundboard, djWaves)
+	hub.Handle("dj.", djHandler.HandleWS)
 	djHandler.OnLibraryChanged = func() {
 		hub.Broadcast(map[string]interface{}{"type": "dj_library"}, nil)
 	}
