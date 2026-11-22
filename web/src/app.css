@@ -31,6 +31,12 @@
   --warning: #f2b45c;
   --warning-soft: #3d3121;
   --danger: #ff6b81;
+
+  /* DJ decks: A is the brand red, B is blue, as in the v3 mockups. */
+  --deck-a: #f43f62;
+  --deck-a-dim: #8f2a40;
+  --deck-b: #4ea3f7;
+  --deck-b-dim: #2a5a8c;
   --info: #7cb6fa;
 
   /* Sizing */

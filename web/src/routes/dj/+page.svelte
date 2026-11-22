@@ -1,61 +1,41 @@
 <script lang="ts">
-  // DJ Studio, scenes first. The server owns playback (internal/dj); this
-  // page is a remote control. Live state arrives over the WebSocket
-  // (djState); the library (scenes/folders/tracks) is refetched whenever any
-  // client changes it (djLibraryVersion).
+  // DJ Studio: one page for everything live. The server owns playback
+  // (internal/dj, docs/dj.md); this page sends commands over the WebSocket
+  // and renders the server's state, so the desktop and a tablet can both
+  // drive it at the same time and always agree.
   //
-  // Folders in the server's music dir are the playlists; scenes pick one or
-  // more of them. Music gets there through the upload dialog (pickers, or a
-  // drop anywhere on this page).
-  //
-  // Layout intent (tablet at the table): big scene tiles you can hit without
-  // looking, a persistent now-playing bar, the library and tracks below.
+  // Two presentation modes, chosen per device and never shared:
+  //   Studio      - library | decks, mixer, queue | scenes + soundboard,
+  //                 with resizable side panes.
+  //   Performance - big scene and effect triggers, both decks, crossfader
+  //                 and master; the library is a drawer. The tablet default.
+  // Switching modes only changes the layout: no audio, queue or socket
+  // change.
   import { onMount } from 'svelte';
-  import { dj, channels as channelsApi, music } from '$lib/api';
-  import { djState, djLibraryVersion } from '$lib/stores/dj';
-  import { botStatus } from '$lib/stores/ws';
+  import { dj } from '$lib/api';
+  import { djState, djLibraryVersion, presence } from '$lib/stores/dj';
+  import { wsConnected } from '$lib/stores/ws';
   import { addToast } from '$lib/stores/toast';
-  import type { DjScene, DjTrack, VoiceChannel } from '$lib/types';
-  import NowPlayingBar from '$lib/components/dj/NowPlayingBar.svelte';
-  import WaveformDeck from '$lib/components/dj/WaveformDeck.svelte';
-  import SceneEditor from '$lib/components/dj/SceneEditor.svelte';
-  import UploadDialog from '$lib/components/dj/UploadDialog.svelte';
+  import { deviceKind, local } from '$lib/dj/live';
+  import type { DjScene, DjTrack } from '$lib/types';
+  import DeckWave from '$lib/components/dj/DeckWave.svelte';
+  import DeckPanel from '$lib/components/dj/DeckPanel.svelte';
+  import Mixer from '$lib/components/dj/Mixer.svelte';
+  import QueuePanel from '$lib/components/dj/QueuePanel.svelte';
+  import LibraryPanel from '$lib/components/dj/LibraryPanel.svelte';
+  import ScenesPanel from '$lib/components/dj/ScenesPanel.svelte';
   import SoundboardPanel from '$lib/components/dj/SoundboardPanel.svelte';
-  import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
-  import { fmtMs, trackTitle } from '$lib/components/dj/format';
-  import {
-    folderName, folderDepth, folderStats, tracksIn, inFolder, fromDrop,
-  } from '$lib/components/dj/library';
+  import VoiceControl from '$lib/components/dj/VoiceControl.svelte';
+  import DjStatusBar from '$lib/components/dj/DjStatusBar.svelte';
+  import UploadDialog from '$lib/components/dj/UploadDialog.svelte';
+  import { fromDrop } from '$lib/components/dj/library';
 
-  // Sub-views, kept in the URL (?view=) so a reload or a bookmark on the
-  // tablet lands on the same one. Scenes first: it's what gets used mid-game.
-  const VIEWS = [
-    { id: 'scenes', label: 'Scenes' },
-    { id: 'music', label: 'Music & Playlists' },
-    { id: 'soundboard', label: 'Soundboard' },
-  ] as const;
-  type View = (typeof VIEWS)[number]['id'];
-  const view = $derived.by((): View => {
-    const v = $page.url.searchParams.get('view');
-    return VIEWS.some((x) => x.id === v) ? (v as View) : 'scenes';
-  });
-  function setView(v: View) {
-    goto(v === 'scenes' ? '?' : `?view=${v}`, { replaceState: true, noScroll: true, keepFocus: true });
-  }
-  let soundboard: ReturnType<typeof SoundboardPanel> | undefined = $state();
-
+  // ---- Shared data ----
   let tracks = $state<DjTrack[]>([]);
   let folders = $state<string[]>([]);
   let scenes = $state<DjScene[]>([]);
   let loaded = $state(false);
-
-  let sceneEditorOpen = $state(false);
-  let editingScene = $state<DjScene | null>(null);
-
-  let pending = $state<string | null>(null); // key of the tile/button awaiting the server
-  let trackQuery = $state('');
-  let scanning = $state(false);
+  let selectedFolder = $state('');
 
   async function load() {
     try {
@@ -68,130 +48,149 @@
     }
   }
 
-  // Runs on mount and again whenever any client changes the library.
+  // Runs on mount and again whenever any device changes the library.
   $effect(() => {
     $djLibraryVersion;
     load();
   });
 
   onMount(async () => {
-    if (!$djState) {
+    if (!$djState?.decks) {
       try {
-        djState.set({ ...(await dj.state()), receivedAt: Date.now() });
+        const s = await dj.state();
+        // The WebSocket may have delivered a newer snapshot meanwhile;
+        // only fill in if this one is newer.
+        djState.update((cur) => (cur?.decks && cur.rev >= s.rev ? cur : { ...s, receivedAt: Date.now() }));
       } catch {
-        /* WS init will fill it */
+        /* the WebSocket init fills it */
       }
     }
   });
 
-  const st = $derived($djState);
-  const connected = $derived(!!st?.connected);
-  const stats = $derived(folderStats(folders, tracks));
-  const libraryMs = $derived(tracks.reduce((s, t) => s + t.durationMs, 0));
+  const st = $derived($djState?.decks ? $djState : null);
+  const live = $derived($wsConnected);
 
-  // '' = all music. Selecting a folder filters the track list and is the
-  // default destination for uploads.
-  let selectedFolder = $state('');
+  // ---- Mode (per device) ----
+  type Mode = 'studio' | 'performance';
+  let mode = $state<Mode>(
+    (local.get('dj.mode') as Mode | null) ?? (deviceKind() === 'desktop' ? 'studio' : 'performance'),
+  );
+  function setMode(m: Mode) {
+    mode = m;
+    local.set('dj.mode', m);
+  }
 
-  const visibleTracks = $derived.by(() => {
-    const q = trackQuery.trim().toLowerCase();
-    const inSel = selectedFolder ? tracks.filter((t) => inFolder(t.path, selectedFolder)) : tracks;
-    if (!q) return inSel;
-    return inSel.filter((t) => `${t.title} ${t.artist} ${t.path}`.toLowerCase().includes(q));
+  // ---- Presence ----
+  const devices = $derived.by(() => {
+    const kinds = $presence.map((c) => c.device);
+    if (kinds.length <= 1) return '';
+    const counts = new Map<string, number>();
+    for (const k of kinds) counts.set(k, (counts.get(k) ?? 0) + 1);
+    return [...counts].map(([k, n]) => (n > 1 ? `${n} ${k}s` : k)).join(' + ');
   });
 
-  /** Path shown under a track title, relative to the selected folder. */
-  const shownPath = (t: DjTrack) => (selectedFolder ? t.path.slice(selectedFolder.length + 1) : t.path);
-
-  function sceneTrackCount(s: DjScene) {
-    const n = tracksIn(s.folders, tracks).length;
-    return `${n} track${n === 1 ? '' : 's'}`;
-  }
-
-  async function run(key: string, fn: () => Promise<unknown>) {
-    pending = key;
+  // ---- Studio panes: widths and collapse, per device ----
+  const PANES_KEY = 'dj.panes';
+  const MIN_LEFT = 260, MAX_LEFT = 560, MIN_RIGHT = 300, MAX_RIGHT = 680, MIN_CENTER = 540;
+  const saved = (() => {
     try {
-      await fn();
-    } catch (e) {
-      addToast((e as Error).message, 'error');
-    } finally {
-      pending = null;
+      return JSON.parse(local.get(PANES_KEY) ?? '{}');
+    } catch {
+      return {};
     }
+  })();
+  let leftW = $state<number>(saved.leftW ?? 360);
+  let rightW = $state<number>(saved.rightW ?? 400);
+  let leftOpen = $state<boolean>(saved.leftOpen ?? true);
+  let rightOpen = $state<boolean>(saved.rightOpen ?? true);
+  let workW = $state(1400);
+
+  function savePanes() {
+    local.set(PANES_KEY, JSON.stringify({ leftW, rightW, leftOpen, rightOpen }));
   }
 
-  function tapScene(s: DjScene) {
-    if (s.folders.length === 0) {
-      editScene(s);
-      return;
+  // Below ~1340px there isn't room for three panes and a usable deck
+  // console: the library becomes a drawer over the page (closed until asked
+  // for). Below ~860px everything stacks.
+  const narrow = $derived(workW < 1340);
+  let drawerOpen = $state(false);
+  const stacked = $derived(workW < 860);
+
+  // Widths actually used: clamped so the centre never drops under its
+  // minimum, whatever was saved on a bigger screen.
+  const eff = $derived.by(() => {
+    const pad = 24; // .studio padding
+    let l = leftOpen && !narrow ? Math.max(MIN_LEFT, Math.min(MAX_LEFT, leftW)) : 0;
+    let r = rightOpen ? Math.max(MIN_RIGHT, Math.min(MAX_RIGHT, rightW)) : 0;
+    const gutters = (narrow ? 0 : leftOpen ? 14 : 30) + (rightOpen ? 14 : 30);
+    const over = l + r + gutters + pad + MIN_CENTER - workW;
+    if (over > 0) {
+      const takeR = Math.min(over, Math.max(0, r - MIN_RIGHT));
+      r -= takeR;
+      l -= Math.min(over - takeR, Math.max(0, l - MIN_LEFT));
     }
-    run(`scene:${s.id}`, () => dj.play({ sceneId: s.id }));
+    return { l, r };
+  });
+
+  let drag: { side: 'l' | 'r'; startX: number; start: number } | null = null;
+  function gutDown(side: 'l' | 'r', e: PointerEvent) {
+    if (e.button !== 0) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    drag = { side, startX: e.clientX, start: side === 'l' ? eff.l : eff.r };
+  }
+  function gutMove(e: PointerEvent) {
+    if (!drag) return;
+    const dx = e.clientX - drag.startX;
+    if (drag.side === 'l') leftW = Math.max(MIN_LEFT, Math.min(MAX_LEFT, drag.start + dx));
+    else rightW = Math.max(MIN_RIGHT, Math.min(MAX_RIGHT, drag.start - dx));
+  }
+  function gutUp() {
+    if (!drag) return;
+    drag = null;
+    savePanes();
+  }
+  function gutKey(side: 'l' | 'r', e: KeyboardEvent) {
+    const step = e.shiftKey ? 64 : 16;
+    let d = 0;
+    if (e.key === 'ArrowLeft') d = -step;
+    else if (e.key === 'ArrowRight') d = step;
+    else if (e.key === 'Home') d = -9999;
+    else if (e.key === 'End') d = 9999;
+    else return;
+    e.preventDefault();
+    if (side === 'l') leftW = Math.max(MIN_LEFT, Math.min(MAX_LEFT, eff.l + d));
+    else rightW = Math.max(MIN_RIGHT, Math.min(MAX_RIGHT, eff.r - d));
+    savePanes();
+  }
+  function toggleLeft() {
+    leftOpen = !leftOpen;
+    savePanes();
+  }
+  function toggleRight() {
+    rightOpen = !rightOpen;
+    savePanes();
   }
 
-  function editScene(s: DjScene | null) {
-    editingScene = s;
-    sceneEditorOpen = true;
+  // Performance mode library drawer.
+  let perfLib = $state(local.get('dj.perf.lib') === '1');
+  function togglePerfLib() {
+    perfLib = !perfLib;
+    local.set('dj.perf.lib', perfLib ? '1' : '0');
   }
 
-  // ---- Folders and deletes ----
-  let newFolderOpen = $state(false);
-  let newFolderName = $state('');
-  // Two-tap delete: the first tap arms the button, the second deletes. No
-  // modal, so it works one-handed on the tablet; arming expires after 4s.
-  let armed = $state<string | null>(null);
-  let armTimer: ReturnType<typeof setTimeout> | undefined;
-  function arm(key: string) {
-    armed = key;
-    clearTimeout(armTimer);
-    armTimer = setTimeout(() => (armed = null), 4000);
-  }
-
-  async function createFolder() {
-    const name = newFolderName.trim();
-    if (!name) return;
-    const path = [selectedFolder, name].filter(Boolean).join('/');
-    try {
-      await dj.folders.create(path);
-      newFolderName = '';
-      newFolderOpen = false;
-      await load();
-      selectedFolder = path;
-    } catch (e) {
-      addToast(`Couldn't create folder: ${(e as Error).message}`, 'error');
-    }
-  }
-
-  async function deleteFolder(f: string) {
-    if (armed !== `f:${f}`) return arm(`f:${f}`);
-    armed = null;
-    try {
-      await dj.folders.delete(f);
-      if (selectedFolder === f || inFolder(selectedFolder, f)) selectedFolder = '';
-      addToast(`Deleted ${folderName(f)}`, 'success');
-    } catch (e) {
-      addToast(`Couldn't delete folder: ${(e as Error).message}`, 'error');
-    }
-  }
-
-  async function deleteTrack(t: DjTrack) {
-    if (armed !== `t:${t.id}`) return arm(`t:${t.id}`);
-    armed = null;
-    try {
-      await dj.deleteTrack(t.id);
-    } catch (e) {
-      addToast(`Couldn't delete track: ${(e as Error).message}`, 'error');
-    }
-  }
-
-  // ---- Upload ----
+  // ---- Upload: dialog, plus drops anywhere on the page ----
   let uploadOpen = $state(false);
   let uploading = $state(false);
   let uploadProgress = $state(0);
   let uploadDialog: ReturnType<typeof UploadDialog> | undefined = $state();
+  let soundboard: ReturnType<typeof SoundboardPanel> | undefined = $state();
 
-  // Page-wide drop target. dragenter/leave fire for every child element, so
-  // count them to know when the drag has really left the window.
+  // dragenter/leave fire for every child element, so count them to know
+  // when the drag has really left the window.
   let dragDepth = $state(0);
+  let overSoundboard = $state(false);
   const hasFiles = (e: DragEvent) => !!e.dataTransfer?.types.includes('Files');
+  const onBoard = (e: DragEvent) => !!(e.target as Element | null)?.closest?.('.sb');
   function onDragEnter(e: DragEvent) {
     if (!hasFiles(e)) return;
     e.preventDefault();
@@ -203,331 +202,183 @@
   }
   function onDragOver(e: DragEvent) {
     // Without this the browser opens a dropped file in place of the page.
-    if (hasFiles(e)) e.preventDefault();
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    overSoundboard = onBoard(e);
   }
   async function onDrop(e: DragEvent) {
     if (!hasFiles(e) || !e.dataTransfer) return;
     e.preventDefault();
     dragDepth = 0;
+    const board = onBoard(e);
     const files = await fromDrop(e.dataTransfer);
-    // On the soundboard a drop adds effects to the open tab; anywhere else
-    // it's music, and the dialog asks which folder.
-    if (view === 'soundboard') {
-      soundboard?.addFiles(files);
+    // Dropped on the soundboard: effects for the open tab. Anywhere else:
+    // music, and the dialog asks which folder.
+    if (board && soundboard) {
+      soundboard.addFiles(files);
       return;
     }
     uploadDialog?.addFiles(files);
     uploadOpen = true;
   }
-
-  async function rescan() {
-    scanning = true;
-    try {
-      const r = await dj.rescan();
-      addToast(`Found ${r.found} file${r.found === 1 ? '' : 's'}${r.missing ? `, ${r.missing} missing` : ''}`, 'success');
-    } catch (e) {
-      addToast(`Rescan failed: ${(e as Error).message}`, 'error');
-    } finally {
-      scanning = false;
-    }
-  }
-
-  // ---- Voice: join a channel for music without recording ----
-  let channelList = $state<VoiceChannel[]>([]);
-  let joinChannelId = $state('');
-  let joining = $state(false);
-
-  async function loadChannels() {
-    try {
-      channelList = await channelsApi.list();
-      // Default to the busiest channel: that's where the table is.
-      if (!joinChannelId && channelList.length) {
-        joinChannelId = [...channelList].sort((a, b) => b.members.length - a.members.length)[0].id;
-      }
-    } catch (e) {
-      addToast(`Couldn't load voice channels: ${(e as Error).message}`, 'error');
-    }
-  }
-
-  $effect(() => {
-    if (!$botStatus.recording && !$botStatus.musicOnly) loadChannels();
-  });
-
-  async function joinForMusic() {
-    if (!joinChannelId) return;
-    joining = true;
-    try {
-      await music.join(joinChannelId);
-    } catch (e) {
-      addToast(`Couldn't join: ${(e as Error).message}`, 'error');
-    } finally {
-      joining = false;
-    }
-  }
-
-  async function leaveMusic() {
-    try {
-      await dj.stop(0);
-      await music.leave();
-    } catch (e) {
-      addToast(`Couldn't leave: ${(e as Error).message}`, 'error');
-    }
-  }
-
-  // ---- Arrange mode: reorder scene tiles ----
-  // Arrow buttons rather than drag and drop: HTML5 drag events don't fire on
-  // touch screens, and the tablet is the main place this page is used.
-  let arranging = $state(false);
-
-  async function moveScene(i: number, d: number) {
-    const j = i + d;
-    if (j < 0 || j >= scenes.length) return;
-    const next = [...scenes];
-    [next[i], next[j]] = [next[j], next[i]];
-    scenes = next;
-    try {
-      await dj.scenes.order(next.map((s) => s.id));
-    } catch (e) {
-      addToast(`Couldn't save order: ${(e as Error).message}`, 'error');
-      load();
-    }
-  }
 </script>
 
 <svelte:head><title>DJ Studio - dndscribe</title></svelte:head>
 
-<div class="subnav">
-  <nav aria-label="DJ Studio">
-    {#each VIEWS as v (v.id)}
-      <a href="?view={v.id}" class:active={view === v.id} aria-current={view === v.id ? 'page' : undefined}
-        onclick={(e) => { e.preventDefault(); setView(v.id); }}>{v.label}</a>
-    {/each}
-  </nav>
-</div>
-
-<main class="dj">
-  <div class="heading">
-    <div>
+<div class="dj" class:perf={mode === 'performance'}>
+  <header class="dj-head">
+    <div class="title">
       <div class="eyebrow">Discord music</div>
-      <h1 class="page-title">DJ Studio</h1>
+      <h1>DJ Studio</h1>
     </div>
-    <div class="conn">
-      {#if $botStatus.recording}
-        <span class="badge success">{connected ? 'Playing into' : 'Connecting to'} {$botStatus.channelName ?? 'voice'} (recording)</span>
-      {:else if $botStatus.musicOnly}
-        <span class="badge success">{connected ? 'Playing into' : 'Connecting to'} {$botStatus.channelName ?? 'voice'}</span>
-        <button class="btn btn-sm" onclick={leaveMusic}>Leave</button>
-      {:else}
-        <select class="select" bind:value={joinChannelId} aria-label="Voice channel for music">
-          {#each channelList as c (c.id)}
-            <option value={c.id}>{c.name}{c.members.length ? ` (${c.members.length})` : ''}</option>
-          {/each}
-        </select>
-        <button class="btn-primary btn-sm" onclick={joinForMusic} disabled={!joinChannelId || joining}>
-          {joining ? 'Joining…' : 'Join for music'}
-        </button>
+    <div class="modes" role="radiogroup" aria-label="Layout on this device">
+      <button role="radio" aria-checked={mode === 'studio'} class:on={mode === 'studio'} onclick={() => setMode('studio')}>Studio</button>
+      <button role="radio" aria-checked={mode === 'performance'} class:on={mode === 'performance'} onclick={() => setMode('performance')}>Performance</button>
+    </div>
+    <span class="sync" class:down={!live} role="status">
+      <span class="dot" aria-hidden="true"></span>
+      {#if live}Live{devices ? ` · ${devices}` : ''}{:else}Reconnecting…{/if}
+    </span>
+    {#if st?.error}
+      <span class="err tiny" title={st.error}>{st.error}</span>
+    {/if}
+    <div class="head-right">
+      <VoiceControl {st} {live} />
+      {#if mode === 'performance'}
+        <button class="btn btn-sm" class:active={perfLib} onclick={togglePerfLib} aria-expanded={perfLib}>Library</button>
+      {:else if narrow && !stacked}
+        <button class="btn btn-sm" class:active={drawerOpen} onclick={() => (drawerOpen = !drawerOpen)} aria-expanded={drawerOpen}>Library</button>
       {/if}
-      <button class="btn btn-sm btn-ghost" onclick={() => run('tone', () => dj.tone(2))} disabled={!connected || pending === 'tone'}
-        title="Play a 2 second 440 Hz tone to check the bot can be heard">Test tone</button>
     </div>
-  </div>
+  </header>
 
-  {#if st?.error}
-    <div class="notice card warn" role="status">{st.error}</div>
+  {#if !live}
+    <div class="offline" role="alert">
+      Lost the connection to the server. Showing the last known state; controls are off until it reconnects. Music on the server keeps playing.
+    </div>
   {/if}
 
-  <WaveformDeck {st} />
-
-  {#if view === 'scenes'}
-  <section>
-    <div class="section-head">
-      <h2 class="section-title">Scenes</h2>
-      <div class="pane-tools">
-        {#if scenes.length > 1}
-          <button class="btn btn-sm" class:btn-primary={arranging} onclick={() => (arranging = !arranging)} aria-pressed={arranging}>
-            {arranging ? 'Done' : 'Arrange'}
-          </button>
+  <div class="work" bind:clientWidth={workW}>
+    {#if mode === 'studio'}
+      <div class="studio" class:narrow class:stacked
+        style:grid-template-columns={stacked ? '1fr' : `${narrow ? 0 : eff.l}px ${narrow ? 0 : leftOpen ? 14 : 30}px minmax(0, 1fr) ${rightOpen ? 14 : 30}px ${eff.r}px`}>
+        {#if leftOpen && (!narrow || stacked)}
+          <aside class="pane left" aria-label="Library pane">
+            <LibraryPanel {st} {live} {tracks} {folders} bind:selected={selectedFolder}
+              onupload={() => (uploadOpen = true)} onchanged={load} />
+          </aside>
+        {:else if !stacked}
+          <div></div>
         {/if}
-        <button class="btn btn-sm" onclick={() => editScene(null)} disabled={arranging}>+ New scene</button>
-      </div>
-    </div>
-    {#if loaded && scenes.length === 0}
-      <div class="scenes">
-        <button class="scene empty" onclick={() => editScene(null)}>
-          <span class="scene-name">Create your first scene</span>
-          <span class="scene-meta">A scene is one or more music folders plus how they play: tavern, travel, combat, boss.</span>
-        </button>
-      </div>
-    {:else}
-      <div class="scenes">
-        {#each scenes as s, i (s.id)}
-          {@const active = st?.playing && st.sceneId === s.id}
-          <div class="scene-wrap" class:arranging>
-            <button
-              class="scene"
-              class:active
-              class:paused={active && st?.paused}
-              style:--scene-color={s.color || 'var(--accent)'}
-              onclick={() => !arranging && tapScene(s)}
-              disabled={pending === `scene:${s.id}`}
-              tabindex={arranging ? -1 : 0}
-              aria-pressed={active}
-            >
-              <span class="scene-name" title={s.name}>{s.name}</span>
-              <span class="scene-foot">
-                <span class="scene-meta">
-                  {#if s.folders.length}
-                    {sceneTrackCount(s)}{#if active && st?.paused} · Paused{/if}
-                  {:else}
-                    No music folders
-                  {/if}
-                </span>
-                <span class="scene-flags">
-                  {#if s.shuffle}
-                    <svg viewBox="0 0 24 24" role="img" aria-label="Shuffle"><title>Shuffle</title><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5" /></svg>
-                  {/if}
-                  {#if s.loop}
-                    <svg viewBox="0 0 24 24" role="img" aria-label="Repeat"><title>Repeat</title><path d="M17 1l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 23l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3" /></svg>
-                  {/if}
-                </span>
-              </span>
-            </button>
-            {#if arranging}
-              <div class="arrange">
-                <button class="icon-btn" onclick={() => moveScene(i, -1)} disabled={i === 0} aria-label="Move {s.name} earlier">&#9664;</button>
-                <button class="icon-btn" onclick={() => moveScene(i, 1)} disabled={i === scenes.length - 1} aria-label="Move {s.name} later">&#9654;</button>
-              </div>
-            {:else}
-              <button class="scene-edit icon-btn" onclick={() => editScene(s)} aria-label="Edit {s.name}">&#8943;</button>
-            {/if}
+        {#if !stacked}
+          {#if leftOpen && !narrow}
+            <!-- A focusable separator is the ARIA window-splitter pattern
+                 (arrow keys resize); the lint rule doesn't know it. -->
+            <div class="gcol">
+              <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+              <div class="gutter" role="separator" aria-orientation="vertical" aria-label="Resize the library"
+                aria-valuemin={MIN_LEFT} aria-valuemax={MAX_LEFT} aria-valuenow={eff.l} tabindex="0"
+                onpointerdown={(e) => gutDown('l', e)} onpointermove={gutMove} onpointerup={gutUp} onpointercancel={gutUp}
+                onkeydown={(e) => gutKey('l', e)}></div>
+              <button class="toggle-pane" onclick={toggleLeft} aria-label="Hide the library" title="Hide the library">&#8249;</button>
+            </div>
+          {:else}
+            <div class="rail">
+              {#if !narrow}<button class="toggle-pane" onclick={toggleLeft} aria-label="Show the library" title="Show the library">&#8250;</button>{/if}
+            </div>
+          {/if}
+        {/if}
+
+        <section class="center" aria-label="Decks and mixer">
+          <div class="waves card">
+            <DeckWave {st} deck={0} live={live} />
+            <DeckWave {st} deck={1} live={live} />
           </div>
-        {/each}
-      </div>
-    {/if}
-  </section>
+          <div class="console">
+            <DeckPanel {st} deck={0} {live} />
+            <Mixer {st} {live} />
+            <DeckPanel {st} deck={1} {live} />
+          </div>
+          <QueuePanel {st} {live} />
+        </section>
 
-    <div class="card pane">
-      <div class="pane-head">
-        <h2 class="section-title">Up next</h2>
-        {#if st?.playing}<span class="tiny subtle">{st.programName}{st.loop ? ' · loops' : ''}</span>{/if}
+        {#if !stacked}
+          {#if rightOpen}
+            <div class="gcol">
+              <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+              <div class="gutter" role="separator" aria-orientation="vertical" aria-label="Resize scenes and soundboard"
+                aria-valuemin={MIN_RIGHT} aria-valuemax={MAX_RIGHT} aria-valuenow={eff.r} tabindex="0"
+                onpointerdown={(e) => gutDown('r', e)} onpointermove={gutMove} onpointerup={gutUp} onpointercancel={gutUp}
+                onkeydown={(e) => gutKey('r', e)}></div>
+              <button class="toggle-pane" onclick={toggleRight} aria-label="Hide scenes and soundboard" title="Hide scenes and soundboard">&#8250;</button>
+            </div>
+          {:else}
+            <div class="rail">
+              <button class="toggle-pane" onclick={toggleRight} aria-label="Show scenes and soundboard" title="Show scenes and soundboard">&#8249;</button>
+            </div>
+          {/if}
+        {/if}
+        {#if rightOpen || stacked}
+          <aside class="pane right" aria-label="Scenes and soundboard">
+            <div class="card scenes-box">
+              <ScenesPanel {st} {live} bind:scenes {tracks} {folders} {loaded} onchanged={load} />
+            </div>
+            <div class="card sb-box">
+              <SoundboardPanel bind:this={soundboard} {st} {live} />
+            </div>
+          </aside>
+        {/if}
+        {#if stacked && !leftOpen}
+          <button class="btn show-lib" onclick={toggleLeft}>Show the library</button>
+        {/if}
       </div>
-      {#if !st?.playing}
-        <p class="subtle small">The queue for the playing scene shows here.</p>
-      {:else if st.upNext.length === 0}
-        <p class="subtle small">Nothing after this track.</p>
-      {:else}
-        <ol class="rows queue">
-          {#each st.upNext as t, i (i)}
-            <li>
-              <span class="num tiny subtle">{i + 1}</span>
-              <span class="row-main static">
-                <span class="row-title">{t.title}</span>
-                <span class="tiny subtle">{t.artist}{t.durationMs ? `${t.artist ? ' · ' : ''}${fmtMs(t.durationMs)}` : ''}</span>
-              </span>
-            </li>
-          {/each}
-        </ol>
-      {/if}
-    </div>
-  {:else if view === 'music'}
-  <div class="music-grid">
-    <div class="card pane">
-      <div class="pane-head">
-        <h2 class="section-title">Library</h2>
-        <div class="pane-tools">
-          <button class="btn btn-sm" onclick={() => (newFolderOpen = !newFolderOpen)} aria-expanded={newFolderOpen}>+ Folder</button>
-          <button class="btn-primary btn-sm" onclick={() => (uploadOpen = true)}>Upload</button>
-        </div>
-      </div>
-      {#if newFolderOpen}
-        <form class="new-folder" onsubmit={(e) => { e.preventDefault(); createFolder(); }}>
-          <input class="input" bind:value={newFolderName} placeholder={selectedFolder ? `New folder in ${folderName(selectedFolder)}` : 'New folder'} aria-label="New folder name" />
-          <button class="btn btn-sm" type="submit" disabled={!newFolderName.trim()}>Create</button>
-        </form>
-      {/if}
-      <ul class="rows folders">
-        <li class:selected={selectedFolder === ''} class:current={st?.playing && st.folder === ''}>
-          <button class="row-main" onclick={() => (selectedFolder = '')}>
-            <span class="row-title">All music</span>
-            <span class="tiny subtle">{tracks.length} track{tracks.length === 1 ? '' : 's'}{libraryMs ? ` · ${fmtMs(libraryMs)}` : ''}</span>
-          </button>
-          <button class="icon-btn play" onclick={() => run('f:', () => dj.play({ folder: '' }))}
-            disabled={!connected || tracks.length === 0 || pending === 'f:'} aria-label="Play all music">&#9654;</button>
-        </li>
-        {#each folders as f (f)}
-          {@const fs = stats.get(f)}
-          <li class:selected={selectedFolder === f} class:current={st?.playing && st.folder === f} style:--depth={folderDepth(f)}>
-            <button class="row-main" onclick={() => (selectedFolder = f)}>
-              <span class="row-title">{folderName(f)}</span>
-              <span class="tiny subtle">{fs?.count ?? 0} track{fs?.count === 1 ? '' : 's'}{fs?.ms ? ` · ${fmtMs(fs.ms)}` : ''}</span>
-            </button>
-            {#if selectedFolder === f}
-              <button class="btn btn-sm" class:btn-danger={armed === `f:${f}`} onclick={() => deleteFolder(f)}
-                aria-label="Delete folder {folderName(f)}">{armed === `f:${f}` ? 'Delete all?' : 'Delete'}</button>
-            {/if}
-            <button class="icon-btn play" onclick={() => run(`f:${f}`, () => dj.play({ folder: f }))}
-              disabled={!connected || !fs?.count || pending === `f:${f}`} aria-label="Play {folderName(f)}">&#9654;</button>
-          </li>
-        {/each}
-      </ul>
-      {#if folders.length === 0}
-        <p class="subtle small">Each folder is a playlist, and sub-folders are part of their parent. Upload music or drop a folder anywhere on this page.</p>
-      {/if}
-    </div>
 
-  <section class="card pane">
-    <div class="pane-head">
-      <h2 class="section-title">
-        {selectedFolder ? folderName(selectedFolder) : 'All tracks'} <span class="subtle">({visibleTracks.length})</span>
-      </h2>
-      <div class="pane-tools">
-        <input class="input" type="search" bind:value={trackQuery} placeholder="Search" aria-label="Search tracks" />
-        <button class="btn btn-sm" onclick={rescan} disabled={scanning}
-          title="Pick up files copied into the music folder outside this page">{scanning ? 'Scanning…' : 'Rescan'}</button>
-      </div>
-    </div>
-    {#if tracks.length === 0}
-      <p class="subtle small">No tracks yet. Press Upload, or drop audio files or a folder anywhere on this page.</p>
-    {:else if visibleTracks.length === 0}
-      <p class="subtle small">{trackQuery ? 'No matches.' : 'This folder is empty. Drop music here to upload into it.'}</p>
+      {#if narrow && !stacked && drawerOpen}
+        <div class="drawer-scrim" role="presentation" onclick={() => (drawerOpen = false)}></div>
+        <aside class="drawer" aria-label="Library">
+          <LibraryPanel {st} {live} {tracks} {folders} bind:selected={selectedFolder}
+            onupload={() => (uploadOpen = true)} onchanged={load} />
+        </aside>
+      {/if}
     {:else}
-      <ul class="rows tracks">
-        {#each visibleTracks as t (t.id)}
-          <li class:missing={t.missing} class:current={st?.track?.id === t.id}>
-            <span class="row-main static">
-              <span class="row-title">{trackTitle(t)}</span>
-              <span class="tiny subtle">{[t.artist, shownPath(t)].filter(Boolean).join(' · ')}</span>
-            </span>
-            <span class="tiny subtle dur">{t.durationMs ? fmtMs(t.durationMs) : ''}</span>
-            <button class="icon-btn del" class:armed={armed === `t:${t.id}`} onclick={() => deleteTrack(t)}
-              aria-label={armed === `t:${t.id}` ? `Confirm delete ${trackTitle(t)}` : `Delete ${trackTitle(t)}`}
-              title={armed === `t:${t.id}` ? 'Tap again to delete the file' : 'Delete'}>{armed === `t:${t.id}` ? 'Delete?' : '✕'}</button>
-            <button class="icon-btn play" onclick={() => run(`t:${t.id}`, () => dj.play({ trackId: t.id }))}
-              disabled={!connected || t.missing || pending === `t:${t.id}`} aria-label="Play {trackTitle(t)}">&#9654;</button>
-          </li>
-        {/each}
-      </ul>
+      <div class="perf-grid" class:with-lib={perfLib}>
+        <div class="perf-main">
+          <div class="pdecks">
+            {#each [0, 1] as const as i (i)}
+              <DeckPanel {st} deck={i} {live} compact />
+            {/each}
+          </div>
+          <Mixer {st} {live} strip />
+          <div class="card scenes-box">
+            <ScenesPanel {st} {live} bind:scenes {tracks} {folders} {loaded} strip onchanged={load} />
+          </div>
+          <div class="card sb-box">
+            <SoundboardPanel bind:this={soundboard} {st} {live} big />
+          </div>
+        </div>
+        {#if perfLib}
+          <aside class="perf-lib" aria-label="Library">
+            <LibraryPanel {st} {live} {tracks} {folders} bind:selected={selectedFolder} compact />
+          </aside>
+        {/if}
+      </div>
     {/if}
-  </section>
   </div>
-  {:else}
-  <SoundboardPanel bind:this={soundboard} {st} channelName={$botStatus.channelName} />
-  {/if}
-</main>
 
-<NowPlayingBar {st} />
+  <DjStatusBar {st} {live} />
+</div>
 
 <svelte:window ondragenter={onDragEnter} ondragleave={onDragLeave} ondragover={onDragOver} ondrop={onDrop} />
 
 {#if dragDepth > 0 && !uploadOpen}
   <div class="drop-overlay" aria-hidden="true">
     <div>
-      {#if view === 'soundboard'}
+      {#if overSoundboard}
         <strong>Drop to add sound effects</strong>
-        <span>They go into the open tab</span>
+        <span>They go into the open soundboard tab</span>
       {:else}
         <strong>Drop to upload music</strong>
-        <span>You'll choose the folder next</span>
+        <span>You'll choose the folder next. Drop on the soundboard for effects.</span>
       {/if}
     </div>
   </div>
@@ -537,99 +388,88 @@
   <button class="upload-chip" onclick={() => (uploadOpen = true)}>Uploading {Math.round(uploadProgress * 100)}%</button>
 {/if}
 
-<SceneEditor bind:open={sceneEditorOpen} scene={editingScene} {folders} {tracks} onsaved={load} />
 <UploadDialog bind:this={uploadDialog} bind:open={uploadOpen} bind:uploading bind:progress={uploadProgress}
   {folders} defaultFolder={selectedFolder} />
 
 <style>
-  .dj { max-width: 1240px; width: 100%; margin: 0 auto; padding: 36px 32px 160px; display: flex; flex-direction: column; gap: 28px; }
-  .heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; flex-wrap: wrap; }
-  .heading .eyebrow { margin-bottom: 10px; }
-  .conn { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .notice { padding: 14px 18px; font-size: 14px; color: var(--text-2); }
-  .notice.warn { border-color: var(--warning); color: var(--warning); background: var(--warning-soft); }
+  /* The page fills the viewport under the app header; panes scroll inside. */
+  .dj { height: calc(100dvh - var(--header-h)); display: flex; flex-direction: column; min-height: 0; }
 
-  .section-head, .pane-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
-  .pane-tools { display: flex; gap: 8px; align-items: center; }
-  .pane-tools .input { width: 220px; }
+  .dj-head { display: flex; align-items: center; gap: 14px 18px; padding: 10px 16px; flex-wrap: wrap; border-bottom: 1px solid var(--border-color); }
+  .title .eyebrow { margin-bottom: 2px; }
+  .perf .title .eyebrow { display: none; }
+  .perf .dj-head { padding: 8px 16px; }
+  .title h1 { font-size: 22px; font-weight: 800; margin: 0; letter-spacing: -0.3px; }
+  .modes { display: flex; padding: 3px; gap: 3px; background: var(--surface-sunken); border: 1px solid var(--border-color); border-radius: var(--radius); }
+  .modes button { min-height: 38px; padding: 0 14px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--text-2); font-weight: 600; font-size: 13px; }
+  .modes button.on { background: var(--accent-strong); color: #fff; }
+  .sync { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--success); }
+  .sync .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .sync.down { color: var(--warning); }
+  .err { color: var(--warning); max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .head-right { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .offline { padding: 8px 16px; background: var(--warning-soft); color: var(--warning); font-size: 13px; }
 
-  /* Tablet-first: tiles are large touch targets. */
-  .scenes { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 14px; }
-  .scene-wrap { position: relative; }
-  .scene {
-    --scene-color: var(--accent);
-    width: 100%; min-height: 128px; padding: 18px 18px 16px; border-radius: var(--radius-lg); text-align: left;
-    display: flex; flex-direction: column; justify-content: space-between; gap: 12px;
-    background: var(--surface); border: 1px solid var(--border-strong); color: var(--text);
-    border-top: 5px solid var(--scene-color);
-    transition: background 0.15s, border-color 0.15s, transform 0.08s;
+  .work { flex: 1; min-height: 0; position: relative; }
+
+  /* ---- Studio ---- */
+  .studio { display: grid; height: 100%; padding: 12px; min-height: 0; }
+  .pane { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+  .pane.right .scenes-box { flex: 0 1 auto; max-height: 44%; overflow-y: auto; padding: 12px 14px; }
+  .pane.right .sb-box { flex: 1; min-height: 240px; padding: 12px 14px; overflow: hidden; }
+  .center { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 12px; container-type: inline-size; }
+  .waves { padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; flex-shrink: 0; }
+  .console { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 0.75fr) minmax(0, 1fr); gap: 12px; flex-shrink: 0; }
+  .center :global(.qp) { flex: 1; min-height: 180px; }
+  @container (max-width: 820px) {
+    .console { grid-template-columns: 1fr 1fr; }
+    .console > :global(.mixer) { grid-column: 1 / -1; order: 3; }
   }
-  .scene:hover { background: var(--surface-hover); }
-  .scene:active { transform: scale(0.985); }
-  .scene.active {
-    background: color-mix(in srgb, var(--scene-color) 16%, var(--surface));
-    border-color: var(--scene-color);
-    box-shadow: 0 0 0 1px var(--scene-color), 0 6px 24px color-mix(in srgb, var(--scene-color) 25%, transparent);
+  .gcol, .rail { position: relative; }
+  .gutter { position: absolute; inset: 0; cursor: col-resize; touch-action: none; }
+  .gutter::after { content: ''; position: absolute; top: 0; bottom: 0; left: calc(50% - 1px); width: 2px; border-radius: 1px; background: transparent; transition: background 0.15s; }
+  .gutter:hover::after, .gutter:focus-visible::after { background: var(--accent); }
+  .gutter:focus-visible { outline: none; }
+  .toggle-pane {
+    position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 2; width: 24px; height: 40px; padding: 0;
+    border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--text-2); font-size: 18px;
   }
-  .scene.active.paused { box-shadow: 0 0 0 1px var(--scene-color); }
-  .scene:disabled { opacity: 0.7; }
-  .scene.empty { border: 1px dashed var(--border-strong); color: var(--text-2); grid-column: span 2; }
-  /* Name pinned to the top, count and flags to the bottom, so every tile
-     lines up the same whatever its contents. */
-  .scene-name { font-size: 18px; font-weight: 700; line-height: 1.3; padding-right: 36px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .scene-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 20px; }
-  .scene-meta { font-size: 13px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .scene-flags { display: flex; gap: 8px; color: var(--text-2); flex-shrink: 0; }
-  .scene.active .scene-flags { color: var(--scene-color); }
-  .scene-flags svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-  .scene-wrap.arranging .scene { border-style: dashed; cursor: default; }
-  .scene-wrap.arranging .scene-name { padding-right: 100px; }
-  .arrange { position: absolute; top: 10px; right: 8px; display: flex; gap: 6px; }
-  .arrange .icon-btn { width: var(--touch); height: var(--touch); background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: var(--radius); }
-  .conn .select { min-height: var(--control-h-sm); max-width: 220px; }
-  .scene-edit { position: absolute; top: 10px; right: 8px; width: var(--touch); height: var(--touch); font-size: 20px; color: var(--text-2); }
+  .toggle-pane:hover { color: var(--text); }
+  /* Stacked: the column grows with its content and the work area scrolls.
+     (min-height: 0 on the panes, needed for inner scrolling side by side,
+     would otherwise let the rows collapse on top of each other.) */
+  .work:has(.stacked) { overflow-y: auto; }
+  .studio.stacked { height: auto; min-height: 100%; grid-auto-rows: auto; gap: 12px; }
+  .stacked .pane, .stacked .center { min-height: auto; }
+  .stacked .pane.left { height: 70vh; order: 3; }
+  .stacked .center { order: 1; }
+  .stacked .pane.right { order: 2; }
+  .stacked .pane.right .scenes-box { max-height: none; }
+  .stacked .pane.right .sb-box { min-height: 420px; }
+  .stacked .center :global(.qp) { min-height: 300px; }
+  .show-lib { order: 4; }
+  .drawer-scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 20; }
+  .drawer { position: absolute; top: 12px; bottom: 12px; left: 12px; width: min(380px, 90vw); z-index: 21; display: flex; box-shadow: var(--shadow); }
+  .drawer :global(.lib) { flex: 1; }
 
-  .music-grid { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 18px; align-items: start; }
-
-  /* Same look as the campaign sub-navigation. */
-  .subnav {
-    position: sticky; top: var(--header-h); z-index: 30;
-    height: var(--subnav-h); display: flex; align-items: stretch;
-    padding: 0 24px; background: #17191c; border-bottom: 1px solid var(--border-color);
+  /* ---- Performance ---- */
+  .perf-grid { height: 100%; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 12px; min-height: 0; }
+  .perf-grid.with-lib { grid-template-columns: minmax(0, 1fr) minmax(320px, 380px); }
+  .perf-main { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+  .pdecks { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .perf-main .scenes-box { padding: 10px 12px; flex-shrink: 0; }
+  .perf-main .sb-box { padding: 10px 12px; flex: 1 0 auto; min-height: 260px; }
+  .perf-lib { min-height: 0; display: flex; }
+  .perf-lib :global(.lib) { flex: 1; }
+  @media (max-width: 1000px) {
+    .perf-grid.with-lib { grid-template-columns: minmax(0, 1fr); }
+    .perf-lib { position: absolute; top: 12px; right: 12px; bottom: 12px; width: min(380px, 92vw); z-index: 21; box-shadow: var(--shadow); }
   }
-  .subnav nav { display: flex; align-items: stretch; gap: 4px; overflow-x: auto; scrollbar-width: none; }
-  .subnav nav::-webkit-scrollbar { display: none; }
-  .subnav a {
-    display: flex; align-items: center; padding: 0 14px; white-space: nowrap;
-    color: var(--text-2); font-weight: 600; font-size: 14px;
-    border-bottom: 2px solid transparent; margin-bottom: -1px;
+  @media (max-width: 700px) {
+    .pdecks { grid-template-columns: 1fr; }
+    .dj-head { padding: 8px 12px; }
+    .title .eyebrow { display: none; }
   }
-  .subnav a:hover { color: var(--text); text-decoration: none; }
-  .subnav a.active { color: var(--text); border-bottom-color: var(--accent); }
-  .pane { padding: 20px 22px; display: flex; flex-direction: column; min-height: 160px; }
-
-  .rows { list-style: none; display: flex; flex-direction: column; }
-  .rows li { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border-color); min-height: 56px; }
-  .rows li:last-child { border-bottom: 0; }
-  .rows li.current .row-title { color: var(--accent-text); }
-  .rows li.missing .row-title { color: var(--text-3); text-decoration: line-through; }
-  .row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; text-align: left; padding: 8px 0; background: none; border: 0; color: inherit; }
-  button.row-main:hover .row-title { text-decoration: underline; }
-  .row-title { font-size: 15px; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .row-main .tiny { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .play { width: var(--touch); height: var(--touch); }
-  .num { width: 18px; text-align: right; }
-  .dur { font-variant-numeric: tabular-nums; }
-  .tracks { max-height: 640px; overflow-y: auto; }
-  .del { width: var(--touch); height: var(--touch); color: var(--text-3); font-size: 14px; flex-shrink: 0; }
-  .del.armed { width: auto; padding: 0 10px; color: var(--danger); font-weight: 600; }
-
-  .new-folder { display: flex; gap: 8px; margin-bottom: 10px; }
-  .new-folder .input { flex: 1; }
-  .folders { max-height: 600px; overflow-y: auto; }
-  .folders li { padding-left: calc(var(--depth, 0) * 18px); }
-  .folders li.selected { background: var(--surface-raised); border-radius: var(--radius); }
-  .folders li .row-main { padding-left: 10px; }
 
   .drop-overlay {
     position: fixed; inset: 0; z-index: 50; pointer-events: none;
@@ -641,19 +481,8 @@
   .drop-overlay strong { font-size: 20px; }
   .drop-overlay span { color: var(--text-2); font-size: 14px; }
   .upload-chip {
-    position: fixed; right: 20px; bottom: 120px; z-index: 40;
+    position: fixed; right: 20px; bottom: 84px; z-index: 40;
     padding: 10px 16px; border-radius: 999px; background: var(--surface); border: 1px solid var(--accent); color: var(--text);
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25); font-weight: 600;
-  }
-
-  @media (max-width: 760px) {
-    .dj { padding: 24px 16px 210px; }
-    .music-grid { grid-template-columns: 1fr; }
-    .subnav { padding: 0 8px; }
-    .subnav a { padding: 0 10px; }
-    .scenes { grid-template-columns: repeat(2, 1fr); }
-    .scene.empty { grid-column: span 2; }
-    .pane-tools { width: 100%; }
-    .pane-tools .input { flex: 1; width: auto; }
   }
 </style>

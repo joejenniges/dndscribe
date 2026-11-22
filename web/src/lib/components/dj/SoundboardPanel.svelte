@@ -8,14 +8,26 @@
   // there. Every pad also gets arrow buttons, because HTML5 drag and drop
   // doesn't work on touch screens or from the keyboard.
   import { dj } from '$lib/api';
+  import { djCmd } from '$lib/dj/control';
   import { addToast } from '$lib/stores/toast';
   import { djLibraryVersion } from '$lib/stores/dj';
   import type { DjState, SfxPad, SfxTab } from '$lib/types';
   import PadEditor from './PadEditor.svelte';
+  import Fader from './Fader.svelte';
   import { SCENE_COLORS, fmtMs } from './format';
   import { isAudioName, AUDIO_EXTS, type PickedFile } from './library';
 
-  let { st, channelName }: { st: DjState | null; channelName: string | null } = $props();
+  let {
+    st,
+    live,
+    big = false,
+  }: {
+    st: DjState | null;
+    /** WebSocket up: commands can be sent. */
+    live: boolean;
+    /** Performance mode: larger pads. */
+    big?: boolean;
+  } = $props();
 
   let tabs = $state<SfxTab[]>([]);
   let pads = $state<SfxPad[]>([]);
@@ -89,27 +101,15 @@
   const padColor = (p: SfxPad) => p.color || SCENE_COLORS[p.id % SCENE_COLORS.length];
 
   // ---- Playback ----
-
-  // A fresh id per tap: the server treats a repeated id as a network retry
-  // of the same tap and ignores it, while a new id restarts the pad.
-  // (Not crypto.randomUUID: it's missing on plain-http LAN addresses.)
-  const requestId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-
+  // Each tap is a new command with a new id, so the server restarts the pad;
+  // a network retry of the same tap (same id) is ignored.
   async function tap(p: SfxPad) {
     if (editMode) {
       openEditor(p);
       return;
     }
     try {
-      await dj.sfx.trigger(p.id, requestId());
-    } catch (e) {
-      addToast((e as Error).message, 'error');
-    }
-  }
-
-  async function stopPad(id: number) {
-    try {
-      await dj.sfx.stop(id);
+      await djCmd('sfx.trigger', { padId: p.id });
     } catch (e) {
       addToast((e as Error).message, 'error');
     }
@@ -117,39 +117,10 @@
 
   async function stopAll() {
     try {
-      await dj.sfx.stopAll();
+      await djCmd('sfx.stop');
     } catch (e) {
       addToast((e as Error).message, 'error');
     }
-  }
-
-  // Soundboard volume: send at most every 120ms while dragging, plus the
-  // final value, so the mixer follows the slider without flooding requests.
-  let gainLocal = $state<number | null>(null);
-  const gainPct = $derived(gainLocal ?? Math.round((st?.sfxGain ?? 1) * 100));
-  let gainTimer: ReturnType<typeof setTimeout> | undefined;
-  let gainPending = false;
-  function onGain(e: Event) {
-    gainLocal = Number((e.currentTarget as HTMLInputElement).value);
-    if (gainTimer) {
-      gainPending = true;
-      return;
-    }
-    sendGain();
-  }
-  function sendGain() {
-    const v = gainLocal;
-    if (v === null) return;
-    dj.sfx.gain(v / 100).catch((e) => addToast((e as Error).message, 'error'));
-    gainTimer = setTimeout(() => {
-      gainTimer = undefined;
-      if (gainPending) {
-        gainPending = false;
-        sendGain();
-      } else {
-        gainLocal = null;
-      }
-    }, 120);
   }
 
   // ---- Pad editor ----
@@ -342,118 +313,116 @@
   }
 </script>
 
-<section class="sb">
-  <div class="sb-head">
-    <div>
-      <h2 class="page-sub">Soundboard</h2>
-      <p class="subtle small">Tap a pad to play it into the voice channel over the music. Tap it again to restart it.</p>
+<section class="sb" class:big aria-label="Soundboard">
+  <header>
+    <h2 class="section-title">Soundboard</h2>
+    <div class="gain">
+      <span class="tiny subtle">Volume</span>
+      <Fader value={st?.sfxGain ?? 1} cmd="mix.sfxGain" args={(v) => ({ value: v })} label="Effects volume" disabled={!live} />
     </div>
-    <div class="actions">
-      <button class="btn" class:btn-primary={editMode} onclick={() => (editMode = !editMode)} aria-pressed={editMode}>
-        {editMode ? 'Done' : 'Edit layout'}
+    <div class="tools">
+      <button class="btn btn-sm" onclick={stopAll} disabled={!live || !st?.sfx?.length}
+        title="Stop every effect">&#9632; Stop{st?.sfx?.length ? ` (${st.sfx.length})` : ''}</button>
+      <button class="btn btn-sm" class:btn-primary={editMode} onclick={() => (editMode = !editMode)} aria-pressed={editMode}>
+        {editMode ? 'Done' : 'Edit'}
       </button>
-      <button class="btn-primary" onclick={() => fileInput?.click()} disabled={uploadTotal > 0}>
-        {uploadTotal > 0 ? `Uploading ${uploadDone}/${uploadTotal}` : 'Upload effects'}
+      <button class="btn btn-sm" onclick={() => fileInput?.click()} disabled={uploadTotal > 0} title="Upload sound effects into this tab">
+        {uploadTotal > 0 ? `${uploadDone}/${uploadTotal}` : '+ Add'}
       </button>
       <input bind:this={fileInput} type="file" multiple accept={AUDIO_EXTS.map((e) => '.' + e).join(',')} onchange={onPick} hidden />
     </div>
-  </div>
+  </header>
 
-  <div class="chips">
-    <span class="chip"><span class="k">Voice channel</span> {connected ? (channelName ?? 'connected') : 'Not connected'}</span>
-    <span class="chip"><span class="k">Playing</span> {st?.sfx?.length ?? 0}</span>
-    <span class="chip"><span class="k">Sounds</span> {pads.length}</span>
-  </div>
-
-  <div class="sb-body">
-    <div class="card board">
-      <div class="tabstrip" role="tablist" aria-label="Soundboard tabs">
-        {#each tabs as t (t.id)}
-          <button
-            role="tab"
-            class="tab"
-            class:active={t.id === activeTabId}
-            class:droptarget={dropTab === t.id}
-            aria-selected={t.id === activeTabId}
-            onclick={() => selectTab(t.id)}
-            ondragover={(e) => { if (dragId !== null) { e.preventDefault(); dropTab = t.id; } }}
-            ondragleave={() => (dropTab = null)}
-            ondrop={(e) => onTabDrop(e, t.id)}
-          >
-            {t.title} <span class="count">{padCount(t.id)}</span>
-          </button>
-        {/each}
-        {#if addingTab}
-          <form class="addtab" onsubmit={(e) => { e.preventDefault(); addTab(); }}>
-            <input class="input" bind:value={newTabTitle} placeholder="Tab name" aria-label="New tab name" />
-            <button class="btn btn-sm" type="submit" disabled={!newTabTitle.trim()}>Add</button>
-            <button class="btn-ghost btn-sm" type="button" onclick={() => (addingTab = false)}>Cancel</button>
-          </form>
-        {:else}
-          <button class="tab add" onclick={() => (addingTab = true)}>+ Add tab</button>
-        {/if}
-      </div>
-
-      {#if editMode && activeTab}
-        <div class="tab-edit">
-          <input class="input" bind:value={tabTitleEdit} onchange={renameTab} aria-label="Tab name" />
-          <button class="icon-btn" onclick={() => moveTab(-1)} disabled={tabs[0]?.id === activeTabId} aria-label="Move tab left">&#9664;</button>
-          <button class="icon-btn" onclick={() => moveTab(1)} disabled={tabs[tabs.length - 1]?.id === activeTabId} aria-label="Move tab right">&#9654;</button>
-          <button class="btn btn-sm" class:btn-danger={confirmTabDelete} onclick={deleteTab}>
-            {confirmTabDelete ? `Delete tab and its ${padCount(activeTab.id)} sounds?` : 'Delete tab'}
-          </button>
-        </div>
-      {/if}
-
-      {#if loaded && tabs.length === 0}
-        <div class="empty">
-          <p>No sound effects yet.</p>
-          <p class="subtle small">Upload effects or drop audio files on this page. They go into a tab you can rename.</p>
-        </div>
+  <div class="tabstrip" role="tablist" aria-label="Soundboard tabs">
+    {#each tabs as t (t.id)}
+      <button
+        role="tab"
+        class="tab"
+        class:active={t.id === activeTabId}
+        class:droptarget={dropTab === t.id}
+        aria-selected={t.id === activeTabId}
+        onclick={() => selectTab(t.id)}
+        ondragover={(e) => { if (dragId !== null) { e.preventDefault(); dropTab = t.id; } }}
+        ondragleave={() => (dropTab = null)}
+        ondrop={(e) => onTabDrop(e, t.id)}
+      >
+        {t.title} <span class="count">{padCount(t.id)}</span>
+      </button>
+    {/each}
+    {#if editMode}
+      {#if addingTab}
+        <form class="addtab" onsubmit={(e) => { e.preventDefault(); addTab(); }}>
+          <input class="input" bind:value={newTabTitle} placeholder="Tab name" aria-label="New tab name" />
+          <button class="btn btn-sm" type="submit" disabled={!newTabTitle.trim()}>Add</button>
+          <button class="btn-ghost btn-sm" type="button" onclick={() => (addingTab = false)}>Cancel</button>
+        </form>
       {:else}
-        <div class="grid" class:editing={editMode}>
-          {#each tabPads as p, i (p.id)}
-            {@const play = playing.get(p.id)}
-            <div
-              class="pad-wrap"
-              class:dragging={dragId === p.id}
-              class:dropbefore={dropBefore === p.id && dragId !== p.id}
-              draggable={editMode}
-              ondragstart={(e) => onPadDragStart(e, p)}
-              ondragover={(e) => onPadDragOver(e, p.id)}
-              ondrop={(e) => onPadDrop(e, p.id)}
-              ondragend={endDrag}
-              role="listitem"
+        <button class="tab add" onclick={() => (addingTab = true)}>+ Tab</button>
+      {/if}
+    {/if}
+  </div>
+
+  {#if editMode && activeTab}
+    <div class="tab-edit">
+      <input class="input" bind:value={tabTitleEdit} onchange={renameTab} aria-label="Tab name" />
+      <button class="icon-btn" onclick={() => moveTab(-1)} disabled={tabs[0]?.id === activeTabId} aria-label="Move tab left">&#9664;</button>
+      <button class="icon-btn" onclick={() => moveTab(1)} disabled={tabs[tabs.length - 1]?.id === activeTabId} aria-label="Move tab right">&#9654;</button>
+      <button class="btn btn-sm" class:btn-danger={confirmTabDelete} onclick={deleteTab}>
+        {confirmTabDelete ? `Delete tab and its ${padCount(activeTab.id)} sounds?` : 'Delete tab'}
+      </button>
+    </div>
+  {/if}
+
+  <div class="board">
+    {#if loaded && tabs.length === 0}
+      <div class="empty">
+        <p>No sound effects yet.</p>
+        <p class="subtle small">Press + Add, or drop audio files on the soundboard.</p>
+      </div>
+    {:else}
+      <div class="grid" class:editing={editMode}>
+        {#each tabPads as p, i (p.id)}
+          {@const play = playing.get(p.id)}
+          <div
+            class="pad-wrap"
+            class:dragging={dragId === p.id}
+            class:dropbefore={dropBefore === p.id && dragId !== p.id}
+            draggable={editMode}
+            ondragstart={(e) => onPadDragStart(e, p)}
+            ondragover={(e) => onPadDragOver(e, p.id)}
+            ondrop={(e) => onPadDrop(e, p.id)}
+            ondragend={endDrag}
+            role="listitem"
+          >
+            <button
+              class="pad"
+              class:playing={!!play}
+              class:hasimg={!!p.image}
+              style:--pad-color={padColor(p)}
+              style:background-image={p.image ? `url(${dj.sfx.imageUrl(p.image)})` : undefined}
+              onclick={() => tap(p)}
+              oncontextmenu={(e) => { e.preventDefault(); openEditor(p); }}
+              disabled={!editMode && (!connected || !live)}
+              aria-label={editMode ? `Edit ${p.label}` : `${play ? 'Restart' : 'Play'} ${p.label}`}
+              title={editMode ? 'Edit' : !connected ? 'The bot is not in a voice channel' : 'Right-click to customise'}
             >
-              <button
-                class="pad"
-                class:playing={!!play}
-                class:hasimg={!!p.image}
-                style:--pad-color={padColor(p)}
-                style:background-image={p.image ? `url(${dj.sfx.imageUrl(p.image)})` : undefined}
-                onclick={() => tap(p)}
-                oncontextmenu={(e) => { e.preventDefault(); openEditor(p); }}
-                disabled={!editMode && !connected}
-                aria-label={editMode ? `Edit ${p.label}` : `${play ? 'Restart' : 'Play'} ${p.label}`}
-                title={editMode ? 'Edit' : connected ? 'Right-click to customise' : 'Join a voice channel first'}
-              >
-                {#if play}<span class="badge-playing">Playing</span>{/if}
-                <span class="pad-label">{p.label}</span>
-                <span class="pad-meta">
-                  {#if play}{fmtMs(elapsedMs(p.id))} / {fmtMs(p.durationMs)} · tap to restart{:else}{fmtMs(p.durationMs)}{/if}
-                </span>
-                {#if play}
-                  {#key play.instance}<span class="bar" style:width="{progress(p.id) * 100}%"></span>{/key}
-                {/if}
-              </button>
-              {#if editMode}
-                <div class="pad-move">
-                  <button class="icon-btn" onclick={() => movePad(i, -1)} disabled={i === 0} aria-label="Move {p.label} earlier">&#9664;</button>
-                  <button class="icon-btn" onclick={() => movePad(i, 1)} disabled={i === tabPads.length - 1} aria-label="Move {p.label} later">&#9654;</button>
-                </div>
+              <span class="pad-label">{p.label}</span>
+              <span class="pad-meta">
+                {#if play}{fmtMs(elapsedMs(p.id))} / {fmtMs(p.durationMs)}{:else}{fmtMs(p.durationMs)}{/if}
+              </span>
+              {#if play}
+                {#key play.instance}<span class="bar" style:width="{progress(p.id) * 100}%"></span>{/key}
               {/if}
-            </div>
-          {/each}
+            </button>
+            {#if editMode}
+              <div class="pad-move">
+                <button class="icon-btn" onclick={() => movePad(i, -1)} disabled={i === 0} aria-label="Move {p.label} earlier">&#9664;</button>
+                <button class="icon-btn" onclick={() => movePad(i, 1)} disabled={i === tabPads.length - 1} aria-label="Move {p.label} later">&#9654;</button>
+              </div>
+            {/if}
+          </div>
+        {/each}
+        {#if editMode}
           <button
             class="pad add-pad"
             class:dropbefore={dropBefore === -1}
@@ -462,71 +431,29 @@
             ondrop={(e) => onPadDrop(e, -1)}
           >
             <span class="plus">+</span>
-            <span>Add sound effect</span>
+            <span>Add sound</span>
           </button>
-        </div>
-        <p class="tiny subtle hint">
-          {editMode ? 'Drag pads to reorder, or onto a tab to move them. Tap a pad to edit it.' : 'Right-click a pad, or use Edit layout, to rename it or change its colour or image.'}
-        </p>
-      {/if}
-    </div>
-
-    <aside class="card controls">
-      <h3 class="section-title">Soundboard controls</h3>
-      <label class="field">
-        <span class="row"><span>Soundboard volume</span><span class="subtle">{gainPct}%</span></span>
-        <input type="range" min="0" max="100" value={gainPct} oninput={onGain} aria-label="Soundboard volume" />
-        <span class="tiny subtle">Separate from the music. The master volume in the bar below sets both.</span>
-      </label>
-
-      <div class="active">
-        <div class="eyebrow">Playing now</div>
-        {#if !st?.sfx?.length}
-          <p class="tiny subtle">Nothing.</p>
-        {:else}
-          <ul>
-            {#each st.sfx as s (s.instance)}
-              <li>
-                <span class="name">{s.label}</span>
-                <span class="tiny subtle t">{fmtMs(elapsedMs(s.padId))} / {fmtMs(s.durationMs)}</span>
-                <button class="icon-btn" onclick={() => stopPad(s.padId)} aria-label="Stop {s.label}">&#9632;</button>
-              </li>
-            {/each}
-          </ul>
         {/if}
       </div>
-
-      <dl class="rules">
-        <div><dt>Tap a stopped pad</dt><dd>Play</dd></div>
-        <div><dt>Tap a playing pad</dt><dd>Restart</dd></div>
-        <div><dt>Tap different pads</dt><dd>Overlap</dd></div>
-      </dl>
-
-      <button class="btn stopall" onclick={stopAll} disabled={!st?.sfx?.length}>&#9632; Stop all effects</button>
-    </aside>
+      {#if editMode}
+        <p class="tiny subtle hint">Editing: taps open a pad's settings and don't play. Drag pads to reorder, or onto a tab to move them.</p>
+      {/if}
+    {/if}
   </div>
 </section>
 
 <PadEditor bind:open={editorOpen} pad={editingPad} {tabs} onchanged={load} />
 
 <style>
-  .sb { display: flex; flex-direction: column; gap: 18px; }
-  .sb-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
-  .page-sub { font-size: 22px; font-weight: 700; margin: 0 0 4px; }
-  .sb-head p { margin: 0; }
-  .actions { display: flex; gap: 10px; }
-
-  .chips { display: flex; gap: 10px; flex-wrap: wrap; }
-  .chip { padding: 8px 14px; border: 1px solid var(--border-strong); border-radius: var(--radius); font-size: 13px; font-weight: 600; }
-  .chip .k { color: var(--text-2); font-weight: 500; text-transform: uppercase; font-size: 11px; letter-spacing: 0.06em; margin-right: 6px; }
-
-  .sb-body { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; align-items: start; }
-  .board { padding: 18px 20px; }
-  .controls { padding: 20px; display: flex; flex-direction: column; gap: 20px; }
-
-  .tabstrip { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding-bottom: 14px; border-bottom: 1px solid var(--border-color); margin-bottom: 14px; }
+  .sb { display: flex; flex-direction: column; gap: 10px; min-height: 0; height: 100%; }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .tools { display: flex; gap: 6px; flex-wrap: wrap; }
+  .gain { display: flex; align-items: center; gap: 8px; flex: 1 1 160px; min-width: 140px; max-width: 320px; }
+  .gain .tiny { white-space: nowrap; }
+  .gain :global(.fader) { flex: 1; }
+  .tabstrip { display: flex; gap: 6px; overflow-x: auto; align-items: center; padding-bottom: 2px; scrollbar-width: thin; flex-shrink: 0; }
   .tab {
-    min-height: var(--touch); padding: 0 16px; border-radius: var(--radius); font-weight: 600; font-size: 14px;
+    min-height: 40px; padding: 0 14px; border-radius: var(--radius); font-weight: 600; font-size: 13px; white-space: nowrap;
     background: var(--surface-raised); border: 1px solid var(--border-strong); color: var(--text-2);
   }
   .tab.active { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
@@ -534,71 +461,50 @@
   .tab .count { color: var(--text-3); font-weight: 500; margin-left: 4px; }
   .tab.add { background: none; border-style: dashed; color: var(--accent-text, var(--accent)); }
   .addtab { display: flex; gap: 6px; align-items: center; }
-  .addtab .input { width: 160px; }
-
-  .tab-edit { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
-  .tab-edit .input { width: 200px; }
-  .tab-edit .icon-btn { width: var(--touch); height: var(--touch); border: 1px solid var(--border-strong); border-radius: var(--radius); }
-
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+  .addtab .input { width: 140px; }
+  .tab-edit { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .tab-edit .input { width: 160px; }
+  .tab-edit .icon-btn { width: 40px; height: 40px; border: 1px solid var(--border-strong); border-radius: var(--radius); }
+  .board { flex: 1; min-height: 0; overflow-y: auto; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }
+  .big .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
   .pad-wrap { position: relative; }
   .pad-wrap.dragging { opacity: 0.4; }
   .pad-wrap.dropbefore::before, .add-pad.dropbefore::before {
-    content: ''; position: absolute; left: -7px; top: 6px; bottom: 6px; width: 3px; border-radius: 2px; background: var(--accent);
+    content: ''; position: absolute; left: -5px; top: 6px; bottom: 6px; width: 3px; border-radius: 2px; background: var(--accent);
   }
   .pad {
     --pad-color: var(--accent);
-    position: relative; overflow: hidden; width: 100%; min-height: 128px; padding: 14px; text-align: left;
-    display: flex; flex-direction: column; justify-content: flex-end; gap: 3px;
+    position: relative; overflow: hidden; width: 100%; min-height: 84px; padding: 10px; text-align: left;
+    display: flex; flex-direction: column; justify-content: flex-end; gap: 2px;
     border-radius: var(--radius-lg); border: 1px solid color-mix(in srgb, var(--pad-color) 45%, var(--border-strong));
     background-color: color-mix(in srgb, var(--pad-color) 22%, var(--surface));
     background-size: cover; background-position: center;
     color: var(--text); transition: transform 0.06s, box-shadow 0.15s;
   }
+  .big .pad { min-height: 92px; padding: 12px; }
   /* Darken the bottom of image pads so the label stays readable. */
   .pad.hasimg::after { content: ''; position: absolute; inset: 0; background: linear-gradient(to top, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.05) 60%); }
   .pad > * { position: relative; z-index: 1; }
   .pad:active:not(:disabled) { transform: scale(0.97); }
-  .pad:disabled { opacity: 0.55; cursor: not-allowed; }
-  .pad.playing { border-color: var(--pad-color); box-shadow: 0 0 0 2px var(--pad-color), 0 6px 22px color-mix(in srgb, var(--pad-color) 30%, transparent); }
+  .pad:disabled { opacity: 0.5; cursor: not-allowed; }
+  .pad.playing { border-color: var(--pad-color); box-shadow: 0 0 0 2px var(--pad-color), 0 4px 18px color-mix(in srgb, var(--pad-color) 30%, transparent); animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 2px var(--pad-color), 0 4px 26px color-mix(in srgb, var(--pad-color) 50%, transparent); } }
+  @media (prefers-reduced-motion: reduce) { .pad.playing { animation: none; } }
   .grid.editing .pad { border-style: dashed; }
-  .pad-label { font-size: 16px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .pad-meta { font-size: 12px; color: var(--text-2); }
+  .pad-label { font-size: 14px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .big .pad-label { font-size: 16px; }
+  .pad-meta { font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
   .pad.hasimg .pad-meta { color: rgba(255, 255, 255, 0.8); }
-  .badge-playing {
-    position: absolute !important; top: 10px; right: 10px; padding: 2px 8px; border-radius: 999px;
-    background: var(--pad-color); color: #111; font-size: 11px; font-weight: 700; text-transform: uppercase;
-  }
   .bar { position: absolute !important; left: 0; bottom: 0; height: 4px; background: var(--pad-color); transition: width 0.1s linear; }
-  .pad-move { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; z-index: 2; }
-  .pad-move .icon-btn { width: 40px; height: 40px; background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: var(--radius); }
+  .pad-move { position: absolute; top: 6px; right: 6px; display: flex; gap: 4px; z-index: 2; }
+  .pad-move .icon-btn { width: 36px; height: 36px; background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: var(--radius); }
   .add-pad {
     background: none; border: 1px dashed var(--border-strong); color: var(--text-2);
     align-items: center; justify-content: center; text-align: center;
   }
-  .add-pad .plus { font-size: 24px; color: var(--accent); }
-  .hint { margin: 14px 0 0; }
-  .empty { padding: 30px 10px; text-align: center; }
+  .add-pad .plus { font-size: 22px; color: var(--accent); }
+  .hint { margin: 10px 0 0; }
+  .empty { padding: 24px 10px; text-align: center; }
   .empty p { margin: 4px 0; }
-
-  .controls .row { display: flex; justify-content: space-between; }
-  input[type='range'] { accent-color: var(--accent); height: 28px; width: 100%; }
-  .active ul { list-style: none; margin: 8px 0 0; padding: 0; }
-  .active li { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border-color); }
-  .active .name { flex: 1; min-width: 0; font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .active .t { font-variant-numeric: tabular-nums; }
-  .active .icon-btn { width: 36px; height: 36px; }
-  .rules { margin: 0; }
-  .rules div { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border-color); font-size: 13px; }
-  .rules dt { color: var(--text-2); }
-  .rules dd { margin: 0; color: var(--text-2); }
-  .stopall { width: 100%; min-height: var(--touch); }
-
-  @media (max-width: 1000px) {
-    .sb-body { grid-template-columns: 1fr; }
-  }
-  @media (max-width: 560px) {
-    .grid { grid-template-columns: repeat(2, 1fr); }
-    .board { padding: 14px; }
-  }
 </style>

@@ -6,6 +6,8 @@ let ws: WebSocket | null = null;
 let handlers: MessageHandler[] = [];
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let currentCampaignId: number | null = null;
+let attempts = 0;
+let hello: { device: string; page: string } | null = null;
 
 function getWsUrl(): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -21,10 +23,12 @@ export function connect(): void {
   ws = new WebSocket(getWsUrl());
 
   ws.onopen = () => {
+    attempts = 0;
     // Re-subscribe to campaign if we were tracking one
     if (currentCampaignId != null) {
       setCampaign(currentCampaignId);
     }
+    if (hello) send({ type: 'hello', ...hello });
   };
 
   ws.onmessage = (event) => {
@@ -51,12 +55,16 @@ export function connect(): void {
   };
 }
 
+// Reconnect with exponential backoff (1s, 2s, 4s, capped at 10s) plus up to
+// 30% jitter, so a restarted server isn't hit by every tablet at once.
 function scheduleReconnect(): void {
   if (reconnectTimer) return;
+  const base = Math.min(10_000, 1000 * 2 ** attempts);
+  attempts++;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connect();
-  }, 2000);
+  }, base * (1 + Math.random() * 0.3));
 }
 
 export function disconnect(): void {
@@ -78,11 +86,26 @@ export function subscribe(handler: MessageHandler): () => void {
   };
 }
 
+/** Sends a message now. false if the socket isn't open: callers must not
+ *  queue live actions for later (a sound effect firing a minute late is
+ *  worse than not at all). */
+export function send(msg: unknown): boolean {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+  ws.send(JSON.stringify(msg));
+  return true;
+}
+
 export function setCampaign(campaignId: number): void {
   currentCampaignId = campaignId;
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'set_campaign', campaignId }));
-  }
+  send({ type: 'set_campaign', campaignId });
+}
+
+/** Tells the server what kind of device this is and which page it's on
+ *  (shown to other devices as presence). Re-sent after every reconnect. */
+export function sayHello(device: string, page: string): void {
+  if (hello && hello.device === device && hello.page === page) return;
+  hello = { device, page };
+  send({ type: 'hello', ...hello });
 }
 
 export function isConnected(): boolean {

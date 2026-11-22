@@ -1,46 +1,50 @@
 <script lang="ts">
-  // Waveform of the playing track: the whole song on top (played part in the
-  // accent colour), and below it a zoomed view that scrolls past a fixed
-  // playhead as the song plays.
+  // Waveform of one deck's track: the whole song (played part in the deck's
+  // colour) and, unless `overviewOnly`, a zoomed view that scrolls past a
+  // fixed playhead as the song plays.
   //
   // Waveforms are computed and cached by the server (dj_waveforms); this
-  // component only draws them. A small in-memory cache here means switching
-  // DJ sub-views or a track change back and forth doesn't refetch, and the
-  // next track's waveform is fetched ahead so a track change shows instantly.
+  // component only draws them. A small in-memory cache shared by both decks
+  // means a track moving between decks or coming back doesn't refetch, and
+  // the next queued track's waveform is fetched ahead.
   //
-  // Seeking: click or drag along the overview to jump there; drag the lower
-  // view sideways to scrub (like pulling tape). Either way the position
-  // follows the pointer locally and one seek is sent on release, since each
-  // seek restarts the server's decoder.
+  // Seeking: click or drag along the overview to jump; drag the lower view
+  // sideways to scrub. The position follows the pointer locally and one seek
+  // is sent on release, since each seek restarts the server's decoder.
   import { onMount } from 'svelte';
   import { dj } from '$lib/api';
-  import { djState } from '$lib/stores/dj';
+  import { djCmd } from '$lib/dj/control';
+  import { deckPosition, DECK_NAMES } from '$lib/dj/live';
   import { addToast } from '$lib/stores/toast';
   import type { DjState, DjWaveform } from '$lib/types';
   import { fmtMs } from './format';
+  import { waveCache } from './wavecache';
 
-  let { st }: { st: DjState | null } = $props();
+  let {
+    st,
+    deck,
+    overviewOnly = false,
+    tall = false,
+    live = true,
+    bare = false,
+  }: {
+    st: DjState | null;
+    deck: 0 | 1;
+    overviewOnly?: boolean;
+    tall?: boolean;
+    live?: boolean;
+    /** No deck badge or time (the containing deck card shows them). */
+    bare?: boolean;
+  } = $props();
 
   /** Seconds of audio across the scrolling view. */
   const WINDOW_SEC = 8;
 
-  const cache = new Map<number, Promise<DjWaveform>>();
-  const CACHE_MAX = 12;
-  function load(id: number): Promise<DjWaveform> {
-    let p = cache.get(id);
-    if (!p) {
-      p = dj.waveform(id);
-      p.catch(() => cache.delete(id)); // let a failed one be retried
-      cache.set(id, p);
-      while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value!);
-    }
-    return p;
-  }
-
-  const trackId = $derived(st?.playing ? (st.track?.id ?? 0) : 0);
-  const nextId = $derived(st?.upNext?.[0]?.id ?? 0);
-  const running = $derived(!!st?.playing && !st.paused && st.connected);
-  const durationMs = $derived(st?.track?.durationMs ?? 0);
+  const d = $derived(st?.decks?.[deck] ?? null);
+  const trackId = $derived(d?.track?.id ?? 0);
+  const nextId = $derived(st?.queue?.[0]?.id ?? 0);
+  const running = $derived(!!d?.playing && !!st?.connected);
+  const durationMs = $derived(d?.track?.durationMs ?? 0);
 
   let wave = $state<DjWaveform | null>(null);
   let waveFor = 0;
@@ -52,68 +56,58 @@
       wave = null;
       waveFor = 0;
       status = 'idle';
+      overviewDirty = true;
       return;
     }
     if (id === waveFor && wave) return;
-    let live = true;
+    let alive = true;
     status = 'loading';
-    load(id).then(
+    waveCache.load(id).then(
       (w) => {
-        if (!live) return;
+        if (!alive) return;
         wave = w;
         waveFor = id;
         status = 'ready';
         overviewDirty = true;
       },
       () => {
-        if (live) status = 'error';
+        if (alive) status = 'error';
       },
     );
     return () => {
-      live = false;
+      alive = false;
     };
   });
 
-  // Fetch the next track's waveform ahead of time. Errors are ignored here;
-  // the real request will report them.
+  // Fetch the next queued track's waveform ahead (it lands on a deck soon).
   $effect(() => {
-    if (nextId && nextId !== trackId) load(nextId).catch(() => {});
+    if (nextId && nextId !== trackId) waveCache.load(nextId).catch(() => {});
   });
 
   // ---- Position ----
-  // The server sends position on changes and every few seconds while
-  // playing; in between it's extrapolated from the local clock. When a new
-  // update disagrees slightly with the extrapolation, the difference is eased
-  // out over a fraction of a second instead of jumping, so the scroll stays
-  // smooth.
+  // Extrapolated from the last snapshot. When a new snapshot disagrees
+  // slightly with the extrapolation, the difference is eased out over a
+  // fraction of a second instead of jumping, so the scroll stays smooth.
   let corr = 0;
   let lastShown = 0;
   let lastKey = '';
-  function predicted(now: number): number {
-    if (!st) return 0;
-    const p = st.positionMs + (running ? now - (st.receivedAt ?? now) : 0);
-    return durationMs > 0 ? Math.min(p, durationMs) : p;
-  }
   $effect(() => {
-    // Re-anchor whenever a new state arrives.
-    const key = `${st?.receivedAt}`;
+    const key = `${st?.receivedAt}|${trackId}`;
     if (key === lastKey) return;
+    const sameTrack = lastKey.endsWith(`|${trackId}`);
     lastKey = key;
-    const now = Date.now();
-    const diff = lastShown - predicted(now);
-    corr = Math.abs(diff) < 1000 ? diff : 0;
+    const diff = lastShown - deckPosition(st, deck);
+    corr = sameTrack && Math.abs(diff) < 1000 ? diff : 0;
   });
 
   // ---- Seeking ----
-  const seekable = $derived(!!st?.playing && trackId > 0 && durationMs > 0);
-  /** Position shown while dragging, and until the seek's state comes back. */
+  const seekable = $derived(live && !!d?.track && trackId > 0 && durationMs > 0 && !d.loading);
   let scrubPos: number | null = null;
   let drag: { kind: 'overview' | 'scroll'; startX: number; startPos: number; moved: boolean } | null = null;
   let seeking = $state(false);
 
   const clampPos = (ms: number) => Math.max(0, Math.min(durationMs, ms));
-  /** Where the song is now, independent of when the last frame was drawn. */
-  const currentPos = () => scrubPos ?? clampPos(predicted(Date.now()) + corr);
+  const currentPos = () => scrubPos ?? clampPos(deckPosition(st, deck) + corr);
 
   function overviewPos(e: PointerEvent): number {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -142,10 +136,10 @@
 
   function onUp() {
     if (!drag) return;
-    const d = drag;
+    const dr = drag;
     drag = null;
     // A tap on the lower view (no drag) does nothing; on the overview it seeks.
-    if (scrubPos === null || (d.kind === 'scroll' && !d.moved)) {
+    if (scrubPos === null || (dr.kind === 'scroll' && !dr.moved)) {
       scrubPos = null;
       return;
     }
@@ -161,10 +155,7 @@
     scrubPos = ms;
     seeking = true;
     try {
-      // Take the state from the response: it's guaranteed to be after the
-      // seek, unlike a periodic update that might cross it in flight.
-      const s = await dj.seek(ms);
-      djState.set({ ...s, receivedAt: Date.now() });
+      await djCmd('deck.seek', { deck, positionMs: Math.round(ms) });
       corr = 0;
     } catch (err) {
       addToast(`Couldn't seek: ${(err as Error).message}`, 'error');
@@ -186,22 +177,23 @@
   }
 
   // ---- Drawing ----
+  let rootEl: HTMLElement | undefined = $state();
   let overviewEl: HTMLCanvasElement | undefined = $state();
   let scrollEl: HTMLCanvasElement | undefined = $state();
   let overviewDirty = true;
-  let played: HTMLCanvasElement | null = null; // overview pre-rendered in the played colour
+  let played: HTMLCanvasElement | null = null;
   let unplayed: HTMLCanvasElement | null = null;
   let posText = $state('0:00');
-  let posSec = $state(0); // for the slider's aria-valuenow
+  let posSec = $state(0);
 
-  type Colors = { accent: string; accentDim: string; muted: string; mutedDim: string; line: string; head: string };
+  type Colors = { deck: string; deckDim: string; muted: string; mutedDim: string; line: string; head: string };
   let colors: Colors | null = null;
   function readColors(el: Element): Colors {
     const cs = getComputedStyle(el);
-    const v = (n: string, d: string) => cs.getPropertyValue(n).trim() || d;
+    const v = (n: string, dflt: string) => cs.getPropertyValue(n).trim() || dflt;
     return {
-      accent: v('--accent', '#f43f62'),
-      accentDim: v('--accent-strong', '#bd1c47'),
+      deck: v('--deck-color', '#f43f62'),
+      deckDim: v('--deck-dim', '#bd1c47'),
       muted: v('--text-3', '#7c818b'),
       mutedDim: v('--border-strong', '#3d4148'),
       line: v('--border-color', '#32353b'),
@@ -221,7 +213,6 @@
     return false;
   }
 
-  /** Renders the whole-track waveform in one colour into an offscreen canvas. */
   function renderOverview(w: DjWaveform, width: number, height: number, peakColor: string, rmsColor: string) {
     const c = document.createElement('canvas');
     c.width = width;
@@ -261,7 +252,7 @@
       return;
     }
     if (overviewDirty || resized || !played || !unplayed) {
-      played = renderOverview(wave, W, H, colors.accentDim, colors.accent);
+      played = renderOverview(wave, W, H, colors.deckDim, colors.deck);
       unplayed = renderOverview(wave, W, H, colors.mutedDim, colors.muted);
       overviewDirty = false;
     }
@@ -272,7 +263,6 @@
     g.fillRect(Math.min(px, W - 2), 0, 2, H);
   }
 
-  /** One half (top) of the envelope as a closed, mirrored polygon. */
   function envelope(g: CanvasRenderingContext2D, w: DjWaveform, idx: 0 | 1, startSec: number, pxPerSec: number, W: number, mid: number) {
     const bps = w.binsPerSecond;
     const bins = w.data.length / 2;
@@ -300,14 +290,11 @@
     g.clearRect(0, 0, W, H);
     g.fillStyle = colors.line;
     g.fillRect(0, Math.floor(mid), W, 1);
-
     if (wave) {
       const pxPerSec = W / WINDOW_SEC;
       const startSec = posMs / 1000 - WINDOW_SEC / 2;
-      // Left of the playhead has been heard: accent, like the overview and
-      // the progress bar; what's coming is grey.
       for (const [x0, x1, pk, rm] of [
-        [0, head, colors.accentDim, colors.accent],
+        [0, head, colors.deckDim, colors.deck],
         [head, W, colors.mutedDim, colors.muted],
       ] as const) {
         g.save();
@@ -324,7 +311,6 @@
         }
         g.restore();
       }
-      // Second ticks along the bottom.
       g.fillStyle = colors.line;
       const dpr = window.devicePixelRatio || 1;
       for (let s = Math.ceil(startSec); s <= startSec + WINDOW_SEC; s++) {
@@ -343,23 +329,23 @@
     let lastDrawKey = '';
     const frame = () => {
       raf = requestAnimationFrame(frame);
-      if (!colors && overviewEl) colors = readColors(overviewEl);
+      if (!colors && rootEl) colors = readColors(rootEl);
       const now = Date.now();
       const dt = now - prev;
       prev = now;
       corr *= Math.exp(-dt / 250);
       if (Math.abs(corr) < 1) corr = 0;
-      let pos = Math.max(0, predicted(now) + corr);
+      let pos = Math.max(0, deckPosition(st, deck, now) + corr);
       if (durationMs > 0) pos = Math.min(pos, durationMs);
       if (scrubPos !== null) pos = scrubPos;
       else lastShown = pos;
       // While nothing moves, don't redraw every frame (the tablet's battery).
-      const sizeKey = `${overviewEl?.clientWidth}x${scrollEl?.clientWidth}`;
+      const sizeKey = `${overviewEl?.clientWidth}x${overviewEl?.clientHeight}|${scrollEl?.clientWidth}`;
       const key = `${Math.round(pos)}|${status}|${trackId}|${sizeKey}|${overviewDirty}`;
       if (!running && key === lastDrawKey) return;
       lastDrawKey = key;
       drawOverview(pos);
-      drawScroll(pos);
+      if (!overviewOnly) drawScroll(pos);
       const t = fmtMs(pos);
       if (t !== posText) posText = t;
       const sec = Math.round(pos / 1000);
@@ -370,60 +356,56 @@
   });
 </script>
 
-<section class="deck card" aria-label="Waveform of the playing track">
-  <div class="deck-head">
-    <div class="title">
-      {#if st?.playing && st.track}
-        <strong>{st.track.title}</strong>
-        <span class="tiny subtle">{st.programName}{st.paused ? ' · Paused' : ''}</span>
-      {:else}
-        <strong class="subtle">Nothing playing</strong>
+<div class="dw deck-{deck}" class:tall bind:this={rootEl}>
+  <div class="row">
+    {#if !bare}<span class="tag" aria-hidden="true">{DECK_NAMES[deck]}</span>{/if}
+    <div class="waves">
+      {#if !overviewOnly}
+        <div class="wrap scroll-wrap" class:seekable class:dragging={seeking}
+          onpointerdown={(e) => onDown('scroll', e)} onpointermove={onMove} onpointerup={onUp} onpointercancel={onCancel}
+          role="presentation" title={seekable ? 'Drag sideways to scrub' : undefined}>
+          <canvas bind:this={scrollEl} class="scroll" aria-hidden="true"></canvas>
+        </div>
       {/if}
+      <div class="wrap overview-wrap" class:seekable role="slider" tabindex={seekable ? 0 : -1}
+        aria-label="Deck {DECK_NAMES[deck]} position. Click or drag to jump; arrow keys skip 5 seconds, with Shift 30."
+        aria-valuemin={0} aria-valuemax={Math.round(durationMs / 1000)} aria-valuenow={posSec}
+        aria-valuetext={posText} aria-disabled={!seekable}
+        onpointerdown={(e) => onDown('overview', e)} onpointermove={onMove} onpointerup={onUp} onpointercancel={onCancel}
+        onkeydown={onKey}>
+        <canvas bind:this={overviewEl} class="overview" aria-hidden="true"></canvas>
+        {#if !d?.track}
+          <span class="overlay tiny subtle">Deck {DECK_NAMES[deck]} empty</span>
+        {:else if d.loading || status === 'loading'}
+          <span class="overlay tiny subtle">Loading…</span>
+        {:else if status === 'error'}
+          <span class="overlay tiny subtle">No waveform for this track</span>
+        {/if}
+      </div>
     </div>
-    <span class="tiny subtle time">
-      {#if st?.playing && durationMs}{posText} / {fmtMs(durationMs)}{/if}
-    </span>
+    {#if !bare}<span class="time tiny">{#if d?.track}{posText}<span class="subtle">&nbsp;/ {fmtMs(durationMs)}</span>{/if}</span>{/if}
   </div>
-  <div class="wrap overview-wrap" class:seekable role="slider" tabindex={seekable ? 0 : -1}
-    aria-label="Song position. Click or drag to jump; arrow keys skip 5 seconds, with Shift 30."
-    aria-valuemin={0} aria-valuemax={Math.round(durationMs / 1000)} aria-valuenow={posSec}
-    aria-valuetext={posText} aria-disabled={!seekable}
-    onpointerdown={(e) => onDown('overview', e)} onpointermove={onMove} onpointerup={onUp} onpointercancel={onCancel}
-    onkeydown={onKey}>
-    <canvas bind:this={overviewEl} class="overview" aria-hidden="true"></canvas>
-  </div>
-  <div class="wrap scroll-wrap" class:seekable class:dragging={seeking}
-    onpointerdown={(e) => onDown('scroll', e)} onpointermove={onMove} onpointerup={onUp} onpointercancel={onCancel}
-    role="presentation" title={seekable ? 'Drag sideways to scrub' : undefined}>
-    <canvas bind:this={scrollEl} class="scroll" aria-hidden="true"></canvas>
-    {#if st?.playing && trackId === 0}
-      <span class="overlay tiny subtle">No waveform for the test tone</span>
-    {:else if status === 'loading'}
-      <span class="overlay tiny subtle">Reading waveform…</span>
-    {:else if status === 'error'}
-      <span class="overlay tiny subtle">Couldn't read this track's waveform</span>
-    {/if}
-  </div>
-</section>
+</div>
 
 <style>
-  .deck { padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 10px; }
-  .deck-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
-  .title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-  .title strong, .title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .dw { --deck-color: var(--deck-a); --deck-dim: var(--deck-a-dim); min-width: 0; }
+  .dw.deck-1 { --deck-color: var(--deck-b); --deck-dim: var(--deck-b-dim); }
+  .row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .tag {
+    flex-shrink: 0; width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center;
+    background: var(--deck-color); color: #111; font-weight: 800; font-size: 13px;
+  }
+  .waves { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .time { flex-shrink: 0; min-width: 78px; text-align: right; font-variant-numeric: tabular-nums; }
   .wrap { position: relative; }
   canvas { display: block; width: 100%; }
-  .overview { height: 40px; }
-  .scroll { height: 96px; background: var(--surface-sunken); border-radius: var(--radius-sm); }
+  .overview { height: 30px; }
+  .tall .overview { height: 46px; }
+  .scroll { height: 64px; background: var(--surface-sunken); border-radius: var(--radius-sm); }
   .seekable { touch-action: none; user-select: none; }
   .overview-wrap.seekable { cursor: pointer; }
   .overview-wrap:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-sm); }
   .scroll-wrap.seekable { cursor: grab; }
   .scroll-wrap.seekable:active { cursor: grabbing; }
   .overlay { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
-
-  @media (max-width: 760px) {
-    .scroll { height: 72px; }
-  }
 </style>
