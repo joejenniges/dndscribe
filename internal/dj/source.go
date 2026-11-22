@@ -138,12 +138,18 @@ func (s *ffmpegSource) Close() {
 type toneSource struct {
 	freq   float64
 	frames int // remaining
+	total  int
 	phase  float64
 }
 
 func newTone(freq float64, seconds float64) Source {
-	return &toneSource{freq: freq, frames: int(seconds * 1000 / FrameMs)}
+	n := int(seconds * 1000 / FrameMs)
+	return &toneSource{freq: freq, frames: n, total: n}
 }
+
+// toneRamp: 10ms fade at each end so the tone starts and stops without a
+// click (it's played with no crossfade).
+const toneRamp = SampleRate / 100
 
 func (t *toneSource) Next() ([]int16, bool, bool) {
 	if t.frames <= 0 {
@@ -152,8 +158,12 @@ func (t *toneSource) Next() ([]int16, bool, bool) {
 	t.frames--
 	frame := make([]int16, FrameLen)
 	step := 2 * math.Pi * t.freq / SampleRate
+	start := (t.total - t.frames - 1) * FrameSamples // sample index of this frame
+	end := t.total * FrameSamples
 	for i := 0; i < FrameSamples; i++ {
-		v := int16(math.Sin(t.phase) * 0.3 * math.MaxInt16)
+		n := start + i
+		g := math.Min(1, math.Min(float64(n)/toneRamp, float64(end-n)/toneRamp))
+		v := int16(math.Sin(t.phase) * 0.3 * g * math.MaxInt16)
 		frame[i*2], frame[i*2+1] = v, v
 		t.phase += step
 		if t.phase > 2*math.Pi {

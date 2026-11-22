@@ -3,23 +3,26 @@
   import Toggle from '$lib/components/ui/Toggle.svelte';
   import { dj } from '$lib/api';
   import { addToast } from '$lib/stores/toast';
-  import type { DjPlaylist, DjScene } from '$lib/types';
-  import { SCENE_COLORS, FADE_OPTIONS } from './format';
+  import type { DjScene, DjTrack } from '$lib/types';
+  import { SCENE_COLORS, FADE_OPTIONS, fmtMs } from './format';
+  import { folderName, folderDepth, folderStats, tracksIn, parentOf } from './library';
 
   let {
     open = $bindable(false),
     scene = null,
-    playlists,
+    folders,
+    tracks,
     onsaved,
   }: {
     open?: boolean;
     scene?: DjScene | null;
-    playlists: DjPlaylist[];
+    folders: string[];
+    tracks: DjTrack[];
     onsaved?: () => void;
   } = $props();
 
   let name = $state('');
-  let playlistId = $state<number | null>(null);
+  let picked = $state<string[]>([]);
   let color = $state(SCENE_COLORS[0]);
   let volume = $state(100);
   let shuffle = $state(false);
@@ -38,7 +41,7 @@
     if (seededFor === scene) return;
     seededFor = scene;
     name = scene?.name ?? '';
-    playlistId = scene?.playlistId ?? playlists[0]?.id ?? null;
+    picked = [...(scene?.folders ?? [])];
     color = scene?.color || SCENE_COLORS[0];
     volume = Math.round((scene?.volume ?? 1) * 100);
     shuffle = scene?.shuffle ?? false;
@@ -52,7 +55,7 @@
     saving = true;
     const body = {
       name: name.trim(),
-      playlistId,
+      folders: picked,
       color,
       volume: volume / 100,
       shuffle,
@@ -71,6 +74,21 @@
     }
   }
 
+  const stats = $derived(folderStats(folders, tracks));
+  const pickedTracks = $derived(tracksIn(picked, tracks));
+  // A folder already includes its sub-folders, so a ticked ancestor makes
+  // ticking a descendant redundant: show it as included, not as a choice.
+  const coveredByAncestor = (f: string) => {
+    for (let p = parentOf(f); p !== ''; p = parentOf(p)) if (picked.includes(p)) return true;
+    return false;
+  };
+  // Folders the scene points at that no longer exist on disk.
+  const gone = $derived(picked.filter((f) => !folders.includes(f)));
+
+  function toggle(f: string) {
+    picked = picked.includes(f) ? picked.filter((x) => x !== f) : [...picked, f];
+  }
+
   async function remove() {
     if (!scene) return;
     try {
@@ -87,17 +105,32 @@
   <form class="form" onsubmit={(e) => { e.preventDefault(); save(); }}>
     <label class="field"><span>Name</span><input class="input" bind:value={name} placeholder="Boss fight" required /></label>
 
-    <label class="field">
-      <span>Playlist</span>
-      {#if playlists.length === 0}
-        <span class="subtle small">Create a playlist first, then point this scene at it.</span>
+    <div class="field">
+      <span>Music folders
+        {#if picked.length}<span class="subtle"> · {pickedTracks.length} track{pickedTracks.length === 1 ? '' : 's'}, {fmtMs(pickedTracks.reduce((s, t) => s + t.durationMs, 0))}</span>{/if}
+      </span>
+      {#if folders.length === 0}
+        <span class="subtle small">No folders yet. Upload some music into a folder first; each folder is a playlist.</span>
       {:else}
-        <select class="select" bind:value={playlistId}>
-          <option value={null}>None</option>
-          {#each playlists as p (p.id)}<option value={p.id}>{p.name} ({p.trackIds.length})</option>{/each}
-        </select>
+        <ul class="folders" aria-label="Folders this scene plays">
+          {#each folders as f (f)}
+            {@const covered = coveredByAncestor(f)}
+            <li style:--depth={folderDepth(f) - 1}>
+              <label class:covered>
+                <input type="checkbox" checked={covered || picked.includes(f)} disabled={covered} onchange={() => toggle(f)} />
+                <span class="fname">{folderName(f)}</span>
+                <span class="tiny subtle">{stats.get(f)?.count ?? 0}</span>
+              </label>
+            </li>
+          {/each}
+        </ul>
+        <span class="tiny subtle">A folder includes its sub-folders.</span>
       {/if}
-    </label>
+      {#if gone.length}
+        <span class="tiny warn">No longer on disk: {gone.join(', ')}.
+          <button type="button" class="linkish" onclick={() => (picked = picked.filter((f) => folders.includes(f)))}>Remove</button></span>
+      {/if}
+    </div>
 
     <div class="field">
       <span>Colour</span>
@@ -147,4 +180,12 @@
   .swatch.on { border-color: var(--text); box-shadow: 0 0 0 2px var(--canvas) inset; }
   input[type='range'] { accent-color: var(--accent); height: 28px; }
   .spacer { flex: 1; }
+  .folders { list-style: none; margin: 0; padding: 4px 0; max-height: 260px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: var(--radius); }
+  .folders li { padding-left: calc(10px + var(--depth) * 20px); }
+  .folders label { display: flex; align-items: center; gap: 10px; min-height: 40px; padding-right: 12px; cursor: pointer; }
+  .folders label.covered { color: var(--text-3); cursor: default; }
+  .folders input { width: 18px; height: 18px; accent-color: var(--accent); }
+  .fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .warn { color: var(--warning); }
+  .linkish { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; font: inherit; }
 </style>

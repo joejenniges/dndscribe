@@ -98,13 +98,20 @@ func main() {
 	if err != nil {
 		log.Fatal("DJ opus encoder: ", err)
 	}
+	// A crossfade saved on the Settings page wins over config.yaml.
+	djFade := cfg.DJ.FadeSeconds
+	if _, err := db.GetSetting(context.Background(), db.SettingDJFadeSeconds, &djFade); err != nil {
+		log.Printf("DJ: read saved crossfade: %v", err)
+	}
 	djEngine := dj.NewEngine(cfg.DJ.FFmpeg, cfg.DJ.MusicDir,
-		&dj.VoiceOutput{Conn: b.VoiceConnection}, enc, cfg.DJ.Volume, cfg.DJ.FadeSeconds)
+		&dj.VoiceOutput{Conn: b.VoiceConnection}, enc, cfg.DJ.Volume, djFade)
 	djEngine.OnState = func(st dj.State) {
 		hub.Broadcast(map[string]interface{}{"type": "dj_state", "data": st}, nil)
 	}
 	djLibrary := dj.NewLibrary(cfg.DJ.FFmpeg, cfg.DJ.MusicDir)
-	djHandler := dj.NewHandler(djEngine, djLibrary)
+	djSoundboard := dj.NewSoundboard(cfg.DJ.SoundboardDir, cfg.DJ.FFmpeg, djEngine)
+	djWaves := dj.NewWaveforms(cfg.DJ.FFmpeg, cfg.DJ.MusicDir)
+	djHandler := dj.NewHandler(djEngine, djLibrary, djSoundboard, djWaves)
 	djHandler.OnLibraryChanged = func() {
 		hub.Broadcast(map[string]interface{}{"type": "dj_library"}, nil)
 	}
@@ -117,7 +124,9 @@ func main() {
 			return
 		}
 		hub.Broadcast(map[string]interface{}{"type": "dj_library"}, nil)
+		djWaves.Fill(djCtx)
 	}()
+	go djSoundboard.Warm(djCtx)
 
 	// Set up WS init message -- sent to every new client on connect.
 	hub.SetInitFunc(func() []byte {

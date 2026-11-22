@@ -20,8 +20,8 @@ type fakeOutput struct {
 	speaking []bool
 }
 
-func (f *fakeOutput) Ready() bool  { return f.ready }
-func (f *fakeOutput) Queued() int  { return f.pending }
+func (f *fakeOutput) Ready() bool         { return f.ready }
+func (f *fakeOutput) Queued() int         { return f.pending }
 func (f *fakeOutput) SetSpeaking(on bool) { f.speaking = append(f.speaking, on) }
 func (f *fakeOutput) Send(b []byte) bool {
 	f.pending++

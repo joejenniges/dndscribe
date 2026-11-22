@@ -2,7 +2,7 @@ import type {
   Campaign, Session, TranscriptionLine, VoiceChannel, VoiceMember,
   BotStatus, IgnoredUser, NicknamePreset, NicknameCategory,
   SessionPreview, SearchResult,
-  DjTrack, DjPlaylist, DjScene, DjState,
+  DjTrack, DjScene, DjState, DjSettings, DjWaveform, SfxTab, SfxPad,
 } from './types';
 
 const BASE = '';
@@ -191,6 +191,55 @@ export const saveRecordings = {
 
 // ---- DJ ----
 
+export class UploadError extends Error {
+  constructor(message: string, public status: number) {
+    super(message);
+  }
+}
+
+interface PutOpts {
+  onProgress?: (sent: number) => void;
+  signal?: AbortSignal;
+}
+
+/**
+ * Upload one audio file to `path` (music-folder-relative, including the file
+ * name). Rejects with UploadError (status 409 = already exists) or an
+ * AbortError.
+ */
+function uploadTrack(path: string, file: File, opts: PutOpts & { overwrite?: boolean } = {}): Promise<DjTrack> {
+  const q = `path=${encodeURIComponent(path)}${opts.overwrite ? '&overwrite=1' : ''}`;
+  return putFile<DjTrack>(`/api/dj/files?${q}`, file, opts);
+}
+
+/** PUT a file as the raw request body. XHR rather than fetch: fetch has no
+ * upload progress events. */
+function putFile<T>(url: string, file: Blob, opts: PutOpts = {}): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', BASE + url);
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.upload.onprogress = (e) => opts.onProgress?.(e.loaded);
+    xhr.onload = () => {
+      let body: { error?: string } = {};
+      try {
+        body = JSON.parse(xhr.responseText);
+      } catch {
+        /* non-JSON error page */
+      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(body as T);
+      else reject(new UploadError(body.error || xhr.statusText || `HTTP ${xhr.status}`, xhr.status));
+    };
+    xhr.onerror = () => reject(new UploadError('network error', 0));
+    xhr.onabort = () => reject(new DOMException('Upload cancelled', 'AbortError'));
+    if (opts.signal) {
+      if (opts.signal.aborted) return reject(new DOMException('Upload cancelled', 'AbortError'));
+      opts.signal.addEventListener('abort', () => xhr.abort(), { once: true });
+    }
+    xhr.send(file);
+  });
+}
+
 const post = <T>(url: string, body?: unknown) =>
   request<T>(url, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) });
 
@@ -198,25 +247,69 @@ type SceneInput = Omit<DjScene, 'id' | 'position'>;
 
 export const dj = {
   state: () => request<DjState>('/api/dj/state'),
-  play: (target: { sceneId?: number; playlistId?: number; trackId?: number; fadeSeconds?: number }) =>
+  play: (target: { sceneId?: number; folder?: string; trackId?: number; fadeSeconds?: number }) =>
     post<DjState>('/api/dj/play', target),
   stop: (fadeSeconds?: number) => post<DjState>('/api/dj/stop', fadeSeconds === undefined ? {} : { fadeSeconds }),
   pause: () => post<DjState>('/api/dj/pause'),
   resume: () => post<DjState>('/api/dj/resume'),
   next: () => post<DjState>('/api/dj/next'),
+  seek: (positionMs: number) => post<DjState>('/api/dj/seek', { positionMs: Math.round(positionMs) }),
   volume: (volume: number) => post<DjState>('/api/dj/volume', { volume }),
   fade: (seconds: number) => post<DjState>('/api/dj/fade', { seconds }),
-  tone: (seconds = 10) => post<DjState>('/api/dj/tone', { seconds }),
+  tone: (seconds = 2) => post<DjState>('/api/dj/tone', { seconds }),
+  settings: () => request<DjSettings>('/api/dj/settings'),
+  saveSettings: (s: Partial<DjSettings>) =>
+    request<DjSettings>('/api/dj/settings', { method: 'PUT', body: JSON.stringify(s) }),
+  /** Raw waveform: [peak, rms] bytes per bin. The browser revalidates by
+   *  ETag, so a track's waveform is downloaded once until the file changes. */
+  waveform: async (trackId: number, signal?: AbortSignal): Promise<DjWaveform> => {
+    const res = await fetch(`${BASE}/api/dj/tracks/${trackId}/waveform`, { signal });
+    if (!res.ok) throw new Error(`waveform: HTTP ${res.status}`);
+    return {
+      binsPerSecond: Number(res.headers.get('X-Bins-Per-Second')) || 100,
+      data: new Uint8Array(await res.arrayBuffer()),
+    };
+  },
 
   tracks: () => request<DjTrack[]>('/api/dj/tracks'),
   rescan: () => post<{ found: number; probed: number; missing: number }>('/api/dj/tracks/rescan'),
 
-  playlists: {
-    list: () => request<DjPlaylist[]>('/api/dj/playlists'),
-    create: (name: string, trackIds: number[] = []) => post<DjPlaylist>('/api/dj/playlists', { name, trackIds }),
-    update: (id: number, patch: { name?: string; trackIds?: number[] }) =>
-      request<DjPlaylist>(`/api/dj/playlists/${id}`, { method: 'PUT', body: JSON.stringify(patch) }),
-    delete: (id: number) => request<{ success: boolean }>(`/api/dj/playlists/${id}`, { method: 'DELETE' }),
+  deleteTrack: (id: number) => request<{ success: boolean }>(`/api/dj/tracks/${id}`, { method: 'DELETE' }),
+
+  folders: {
+    list: () => request<string[]>('/api/dj/folders'),
+    create: (path: string) => post<{ path: string }>('/api/dj/folders', { path }),
+    delete: (path: string) =>
+      request<{ success: boolean }>(`/api/dj/folders?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
+  },
+
+  upload: uploadTrack,
+
+  sfx: {
+    list: () => request<{ tabs: SfxTab[]; pads: SfxPad[] }>('/api/dj/sfx'),
+    imageUrl: (key: string) => `${BASE}/api/dj/sfx/images/${key}`,
+    trigger: (id: number, requestId: string) => post<DjState>(`/api/dj/sfx/pads/${id}/trigger`, { requestId }),
+    stop: (id: number) => post<DjState>(`/api/dj/sfx/pads/${id}/stop`),
+    stopAll: () => post<DjState>('/api/dj/sfx/stop'),
+    gain: (gain: number) => post<DjState>('/api/dj/sfx/gain', { gain }),
+    upload: (tabId: number, file: File, opts: PutOpts = {}) =>
+      putFile<SfxPad>(`/api/dj/sfx/upload?tab=${tabId}&name=${encodeURIComponent(file.name)}`, file, opts),
+    tabs: {
+      create: (title: string) => post<SfxTab>('/api/dj/sfx/tabs', { title }),
+      rename: (id: number, title: string) =>
+        request<{ success: boolean }>(`/api/dj/sfx/tabs/${id}`, { method: 'PUT', body: JSON.stringify({ title }) }),
+      delete: (id: number) => request<{ success: boolean }>(`/api/dj/sfx/tabs/${id}`, { method: 'DELETE' }),
+      order: (ids: number[]) => post<{ success: boolean }>('/api/dj/sfx/tabs/order', { ids }),
+      /** Set a tab's pads in order; pads from other tabs move into it. */
+      arrange: (id: number, padIds: number[]) => post<{ success: boolean }>(`/api/dj/sfx/tabs/${id}/arrange`, { ids: padIds }),
+    },
+    pads: {
+      update: (id: number, patch: Partial<Pick<SfxPad, 'label' | 'color' | 'gain' | 'tabId'>>) =>
+        request<SfxPad>(`/api/dj/sfx/pads/${id}`, { method: 'PUT', body: JSON.stringify(patch) }),
+      delete: (id: number) => request<{ success: boolean }>(`/api/dj/sfx/pads/${id}`, { method: 'DELETE' }),
+      setImage: (id: number, file: File) => putFile<{ image: string }>(`/api/dj/sfx/pads/${id}/image`, file),
+      clearImage: (id: number) => request<{ success: boolean }>(`/api/dj/sfx/pads/${id}/image`, { method: 'DELETE' }),
+    },
   },
 
   scenes: {

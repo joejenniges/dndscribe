@@ -21,6 +21,8 @@ type Config struct {
 type DJConfig struct {
 	// MusicDir is scanned recursively for audio files. Default "music".
 	MusicDir string `yaml:"music_dir"`
+	// SoundboardDir holds uploaded sound effects and pad images. Default "soundboard".
+	SoundboardDir string `yaml:"soundboard_dir"`
 	// FFmpeg is the ffmpeg executable used to decode tracks and read their
 	// duration/tags. Default "ffmpeg" (resolved on PATH).
 	FFmpeg string `yaml:"ffmpeg"`
@@ -175,6 +177,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.DJ.MusicDir == "" {
 		cfg.DJ.MusicDir = "music"
+	}
+	if cfg.DJ.SoundboardDir == "" {
+		cfg.DJ.SoundboardDir = "soundboard"
 	}
 	if cfg.DJ.FFmpeg == "" {
 		cfg.DJ.FFmpeg = "ffmpeg"

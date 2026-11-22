@@ -70,6 +70,7 @@ recordings:
 # a channel. Tracks are any audio files under music_dir; ffmpeg decodes them.
 dj:
   music_dir: "music"
+  soundboard_dir: "soundboard"   # uploaded sound effects + pad images
   ffmpeg: "ffmpeg"        # path or name on PATH
   volume: 0.5             # master volume at startup, 0..1
   fade_seconds: 6         # default crossfade when switching scenes

@@ -108,22 +108,46 @@ export interface DjTrack {
   missing: boolean;
 }
 
-export interface DjPlaylist {
-  id: number;
-  name: string;
-  trackIds: number[];
-}
-
 export interface DjScene {
   id: number;
   name: string;
-  playlistId: number | null;
+  /** Music-folder-relative folder paths; each includes its sub-folders. */
+  folders: string[];
   color: string;
   volume: number;
   shuffle: boolean;
   loop: boolean;
   fadeSeconds: number | null;
   position: number;
+}
+
+export interface SfxTab {
+  id: number;
+  title: string;
+  position: number;
+}
+
+export interface SfxPad {
+  id: number;
+  tabId: number;
+  label: string;
+  originalName: string;
+  durationMs: number;
+  color: string;
+  /** Image key, served at /api/dj/sfx/images/{key}; null = no image. */
+  image: string | null;
+  /** 0..1 */
+  gain: number;
+  position: number;
+}
+
+export interface DjSfxPlaying {
+  padId: number;
+  /** Changes on every retrigger of the pad. */
+  instance: number;
+  label: string;
+  positionMs: number;
+  durationMs: number;
 }
 
 export interface DjTrackInfo {
@@ -138,7 +162,7 @@ export interface DjState {
   playing: boolean;
   paused: boolean;
   sceneId: number | null;
-  playlistId: number | null;
+  folder: string | null;
   programName: string;
   track: DjTrackInfo | null;
   positionMs: number;
@@ -149,6 +173,20 @@ export interface DjState {
   volume: number;
   fadeSeconds: number;
   error?: string;
+  /** Sound effects playing now (soundboard). */
+  sfx: DjSfxPlaying[];
+  /** Soundboard bus gain, 0..1. */
+  sfxGain: number;
   /** Client clock when this state arrived; used to interpolate position. */
   receivedAt?: number;
+}
+
+export interface DjSettings {
+  fadeSeconds: number;
+}
+
+export interface DjWaveform {
+  binsPerSecond: number;
+  /** Two bytes per bin: peak, then RMS, each 0..255 of the track's loudest peak. */
+  data: Uint8Array;
 }

@@ -223,6 +223,15 @@ func runMigrations(ctx context.Context) error {
 	if err := migrateDJ(ctx); err != nil {
 		return fmt.Errorf("dj migration: %w", err)
 	}
+	if err := migrateSfx(ctx); err != nil {
+		return fmt.Errorf("soundboard migration: %w", err)
+	}
+	if err := migrateWaveforms(ctx); err != nil {
+		return fmt.Errorf("waveform migration: %w", err)
+	}
+	if err := migrateSettings(ctx); err != nil {
+		return fmt.Errorf("settings migration: %w", err)
+	}
 
 	// Seed default campaign
 	_, err = pool.Exec(ctx, `

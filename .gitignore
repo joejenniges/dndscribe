@@ -25,3 +25,6 @@ hotwords.txt
 
 # DJ music library (local audio files, not versioned)
 /music/
+
+# Soundboard effects and pad images
+/soundboard/

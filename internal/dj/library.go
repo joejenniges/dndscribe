@@ -32,6 +32,11 @@ type Library struct {
 
 	mu       sync.Mutex
 	scanning bool
+
+	// writeMu serialises a scan against uploads and deletes: a scan prunes
+	// rows for files it didn't see, so a file landing mid-scan must not be
+	// added between the walk and the prune.
+	writeMu sync.Mutex
 }
 
 func NewLibrary(ffmpegPath, musicDir string) *Library {
@@ -46,7 +51,7 @@ type ScanResult struct {
 }
 
 // Scan walks the music folder, probes new or changed files for duration and
-// tags, and flags tracks whose files are gone. Unchanged files (same size and
+// tags, and drops tracks whose files are gone. Unchanged files (same size and
 // mtime) are not re-probed, so a rescan of a big folder is quick.
 func (l *Library) Scan(ctx context.Context) (*ScanResult, error) {
 	l.mu.Lock()
@@ -65,6 +70,8 @@ func (l *Library) Scan(ctx context.Context) (*ScanResult, error) {
 	if err := os.MkdirAll(l.musicDir, 0o755); err != nil {
 		return nil, err
 	}
+	l.writeMu.Lock()
+	defer l.writeMu.Unlock()
 
 	existing, err := db.ListDJTracks(ctx)
 	if err != nil {
@@ -125,7 +132,7 @@ func (l *Library) Scan(ctx context.Context) (*ScanResult, error) {
 			t.Path = j.rel
 			t.SizeBytes = j.info.Size()
 			t.ModTime = j.info.ModTime().Truncate(time.Microsecond)
-			if err := db.UpsertDJTrack(ctx, t); err != nil {
+			if _, err := db.UpsertDJTrack(ctx, t); err != nil {
 				errMu.Lock()
 				probeErrs++
 				errMu.Unlock()
@@ -138,7 +145,7 @@ func (l *Library) Scan(ctx context.Context) (*ScanResult, error) {
 	if present == nil {
 		present = []string{}
 	}
-	if err := db.SetDJTracksMissing(ctx, present); err != nil {
+	if err := db.PruneDJTracks(ctx, present); err != nil {
 		return nil, err
 	}
 	presentSet := make(map[string]bool, len(present))

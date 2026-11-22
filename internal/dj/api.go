@@ -1,11 +1,16 @@
 package dj
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/joe/dndscribe-go/internal/db"
 )
@@ -14,15 +19,24 @@ import (
 type Handler struct {
 	engine  *Engine
 	library *Library
+	sb      *Soundboard
+	waves   *Waveforms
 	mux     *http.ServeMux
 
-	// OnLibraryChanged is called after tracks, playlists or scenes change so
+	// OnLibraryChanged is called after tracks, folders or scenes change so
 	// other open clients (the table monitor, a tablet) can refetch.
 	OnLibraryChanged func()
+
+	changeMu    sync.Mutex
+	changeTimer *time.Timer
 }
 
-func NewHandler(engine *Engine, library *Library) *Handler {
-	h := &Handler{engine: engine, library: library, mux: http.NewServeMux()}
+// maxUploadBytes caps one uploaded file. Generous: an hour-long FLAC
+// ambience track is a few hundred MB.
+const maxUploadBytes = 2 << 30
+
+func NewHandler(engine *Engine, library *Library, sb *Soundboard, waves *Waveforms) *Handler {
+	h := &Handler{engine: engine, library: library, sb: sb, waves: waves, mux: http.NewServeMux()}
 	m := h.mux
 
 	m.HandleFunc("GET /api/dj/state", func(w http.ResponseWriter, r *http.Request) {
@@ -37,6 +51,24 @@ func NewHandler(engine *Engine, library *Library) *Handler {
 		}
 		_ = readBody(r, &body)
 		h.engine.Stop(body.FadeSeconds)
+		writeJSON(w, http.StatusOK, h.engine.State())
+	})
+	m.HandleFunc("POST /api/dj/seek", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			PositionMs *int64 `json:"positionMs"`
+		}
+		if err := readBody(r, &body); err != nil || body.PositionMs == nil {
+			writeErr(w, http.StatusBadRequest, "positionMs is required")
+			return
+		}
+		if err := h.engine.SeekTo(*body.PositionMs); err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, ErrNotPlaying) {
+				status = http.StatusConflict
+			}
+			writeErr(w, status, err.Error())
+			return
+		}
 		writeJSON(w, http.StatusOK, h.engine.State())
 	})
 	m.HandleFunc("POST /api/dj/pause", func(w http.ResponseWriter, r *http.Request) {
@@ -70,8 +102,37 @@ func NewHandler(engine *Engine, library *Library) *Handler {
 			writeErr(w, http.StatusBadRequest, "invalid body")
 			return
 		}
-		h.engine.SetFadeSeconds(body.Seconds)
+		if err := h.setFade(r, body.Seconds); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		writeJSON(w, http.StatusOK, h.engine.State())
+	})
+
+	// Settings saved from the Settings page. Kept in the database so they
+	// survive a restart; config.yaml only supplies the starting defaults.
+	m.HandleFunc("GET /api/dj/settings", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, h.settings())
+	})
+	m.HandleFunc("PUT /api/dj/settings", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			FadeSeconds *float64 `json:"fadeSeconds"`
+		}
+		if err := readBody(r, &body); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		if body.FadeSeconds != nil {
+			if *body.FadeSeconds < 0 || *body.FadeSeconds > 30 {
+				writeErr(w, http.StatusBadRequest, "fadeSeconds must be between 0 and 30")
+				return
+			}
+			if err := h.setFade(r, *body.FadeSeconds); err != nil {
+				writeErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, h.settings())
 	})
 	m.HandleFunc("POST /api/dj/tone", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -104,93 +165,105 @@ func NewHandler(engine *Engine, library *Library) *Handler {
 		writeJSON(w, http.StatusOK, res)
 	})
 
-	// Playlists
-	m.HandleFunc("GET /api/dj/playlists", func(w http.ResponseWriter, r *http.Request) {
-		pls, err := db.ListDJPlaylists(r.Context())
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, pls)
-	})
-	m.HandleFunc("POST /api/dj/playlists", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Name     string  `json:"name"`
-			TrackIDs []int64 `json:"trackIds"`
-		}
-		if err := readBody(r, &body); err != nil || strings.TrimSpace(body.Name) == "" {
-			writeErr(w, http.StatusBadRequest, "name is required")
-			return
-		}
-		pl, err := db.CreateDJPlaylist(r.Context(), strings.TrimSpace(body.Name))
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if len(body.TrackIDs) > 0 {
-			if err := db.SetDJPlaylistTracks(r.Context(), pl.ID, body.TrackIDs); err != nil {
-				writeErr(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			pl.TrackIDs = body.TrackIDs
-		}
-		h.changed()
-		writeJSON(w, http.StatusCreated, pl)
-	})
-	m.HandleFunc("PUT /api/dj/playlists/{id}", func(w http.ResponseWriter, r *http.Request) {
+	m.HandleFunc("GET /api/dj/tracks/{id}/waveform", h.waveform)
+
+	m.HandleFunc("DELETE /api/dj/tracks/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id, ok := pathID(w, r)
 		if !ok {
 			return
 		}
+		t, err := db.GetDJTrack(r.Context(), id)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if t == nil {
+			writeErr(w, http.StatusNotFound, "track not found")
+			return
+		}
+		if err := h.library.DeleteFile(r.Context(), t.Path); err != nil {
+			writeErr(w, http.StatusConflict, err.Error())
+			return
+		}
+		h.changed()
+		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+	})
+
+	// Folders. Each folder under the music dir is a playlist; scenes pick
+	// folders. Paths are music-dir-relative with forward slashes.
+	m.HandleFunc("GET /api/dj/folders", func(w http.ResponseWriter, r *http.Request) {
+		folders, err := h.library.Folders()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, folders)
+	})
+	m.HandleFunc("POST /api/dj/folders", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Name     *string  `json:"name"`
-			TrackIDs *[]int64 `json:"trackIds"`
+			Path string `json:"path"`
 		}
 		if err := readBody(r, &body); err != nil {
 			writeErr(w, http.StatusBadRequest, "invalid body")
 			return
 		}
-		if body.Name != nil {
-			name := strings.TrimSpace(*body.Name)
-			if name == "" {
-				writeErr(w, http.StatusBadRequest, "name is required")
-				return
-			}
-			found, err := db.RenameDJPlaylist(r.Context(), id, name)
-			if err != nil {
-				writeErr(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			if !found {
-				writeErr(w, http.StatusNotFound, "playlist not found")
-				return
-			}
+		rel, err := CleanRelPath(body.Path)
+		if err == nil {
+			err = h.library.MakeFolder(rel)
 		}
-		if body.TrackIDs != nil {
-			if err := db.SetDJPlaylistTracks(r.Context(), id, *body.TrackIDs); err != nil {
-				writeErr(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-		}
-		pl, err := db.GetDJPlaylist(r.Context(), id)
-		if err != nil || pl == nil {
-			writeErr(w, http.StatusNotFound, "playlist not found")
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		h.changed()
-		writeJSON(w, http.StatusOK, pl)
+		writeJSON(w, http.StatusCreated, map[string]string{"path": rel})
 	})
-	m.HandleFunc("DELETE /api/dj/playlists/{id}", func(w http.ResponseWriter, r *http.Request) {
-		id, ok := pathID(w, r)
-		if !ok {
-			return
+	m.HandleFunc("DELETE /api/dj/folders", func(w http.ResponseWriter, r *http.Request) {
+		rel, err := CleanRelPath(r.URL.Query().Get("path"))
+		if err == nil {
+			err = h.library.DeleteFolder(r.Context(), rel)
 		}
-		if _, err := db.DeleteDJPlaylist(r.Context(), id); err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
+		if err != nil {
+			writeErr(w, http.StatusConflict, err.Error())
 			return
 		}
 		h.changed()
 		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+	})
+
+	// Upload one file. The body is the raw file; the target path (folders
+	// included) is in ?path=. One request per file keeps uploads streaming
+	// (no multipart buffering), lets the browser show per-file progress and
+	// retry or skip a single file, and means a dropped connection loses one
+	// track rather than the batch.
+	m.HandleFunc("PUT /api/dj/files", func(w http.ResponseWriter, r *http.Request) {
+		rel, err := CleanRelPath(r.URL.Query().Get("path"))
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if rel == "" || !IsAudioFile(rel) {
+			writeErr(w, http.StatusBadRequest, "only audio files can be uploaded (mp3, ogg, opus, flac, wav, m4a, aac, webm, wma)")
+			return
+		}
+		body := http.MaxBytesReader(w, r.Body, maxUploadBytes)
+		t, err := h.library.SaveFile(r.Context(), rel, body, r.URL.Query().Get("overwrite") == "1")
+		if errors.Is(err, ErrExists) {
+			writeErr(w, http.StatusConflict, err.Error())
+			return
+		}
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeErr(w, http.StatusRequestEntityTooLarge, "file is larger than 2 GB")
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		// Debounced: a 200-file folder upload sends one refetch, not 200.
+		h.changedSoon()
+		writeJSON(w, http.StatusCreated, t)
 	})
 
 	// Scenes
@@ -269,6 +342,7 @@ func NewHandler(engine *Engine, library *Library) *Handler {
 		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 	})
 
+	h.mountSoundboard()
 	return h
 }
 
@@ -280,12 +354,77 @@ func (h *Handler) changed() {
 	if h.OnLibraryChanged != nil {
 		h.OnLibraryChanged()
 	}
+	// New or replaced tracks get their waveforms worked out now rather than
+	// when first played. Cheap when there's nothing to do.
+	h.waves.Fill(context.Background())
+}
+
+type djSettings struct {
+	FadeSeconds float64 `json:"fadeSeconds"`
+}
+
+func (h *Handler) settings() djSettings {
+	return djSettings{FadeSeconds: h.engine.FadeSeconds()}
+}
+
+func (h *Handler) setFade(r *http.Request, seconds float64) error {
+	h.engine.SetFadeSeconds(seconds)
+	return db.SetSetting(r.Context(), db.SettingDJFadeSeconds, h.engine.FadeSeconds())
+}
+
+// waveform serves a track's waveform as raw bytes: [peak, rms] per bin,
+// X-Bins-Per-Second bins per second. The ETag is the file's size and mtime,
+// so the browser keeps its copy until the file changes.
+func (h *Handler) waveform(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	t, err := db.GetDJTrack(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if t == nil || t.Missing {
+		writeErr(w, http.StatusNotFound, "track not found")
+		return
+	}
+	etag := fmt.Sprintf(`"wf1-%d-%d-%d"`, t.ID, t.SizeBytes, t.ModTime.UnixMicro())
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "private, no-cache")
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	wf, err := h.waves.Get(r.Context(), *t)
+	if err != nil {
+		if r.Context().Err() == nil {
+			log.Printf("DJ waveform: %s: %v", t.Path, err)
+			writeErr(w, http.StatusInternalServerError, "couldn't read the track to draw its waveform")
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("X-Bins-Per-Second", strconv.Itoa(wf.BinsPerSecond))
+	w.Header().Set("Content-Length", strconv.Itoa(len(wf.Data)))
+	_, _ = w.Write(wf.Data)
+}
+
+// changedSoon coalesces bursts of changes into one notification 1s after
+// the last one.
+func (h *Handler) changedSoon() {
+	h.changeMu.Lock()
+	defer h.changeMu.Unlock()
+	if h.changeTimer != nil {
+		h.changeTimer.Stop()
+	}
+	h.changeTimer = time.AfterFunc(time.Second, h.changed)
 }
 
 func (h *Handler) play(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		SceneID     *int64   `json:"sceneId"`
-		PlaylistID  *int64   `json:"playlistId"`
+		Folder      *string  `json:"folder"`
 		TrackID     *int64   `json:"trackId"`
 		FadeSeconds *float64 `json:"fadeSeconds"`
 	}
@@ -297,12 +436,15 @@ func (h *Handler) play(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case body.SceneID != nil:
 		err = h.engine.PlayScene(r.Context(), *body.SceneID, body.FadeSeconds)
-	case body.PlaylistID != nil:
-		err = h.engine.PlayPlaylist(r.Context(), *body.PlaylistID, body.TrackID)
+	case body.Folder != nil:
+		var rel string
+		if rel, err = CleanRelPath(*body.Folder); err == nil {
+			err = h.engine.PlayFolder(r.Context(), rel, body.TrackID)
+		}
 	case body.TrackID != nil:
 		err = h.engine.PlayTrack(r.Context(), *body.TrackID)
 	default:
-		writeErr(w, http.StatusBadRequest, "sceneId, playlistId or trackId is required")
+		writeErr(w, http.StatusBadRequest, "sceneId, folder or trackId is required")
 		return
 	}
 	if err != nil {
@@ -326,6 +468,20 @@ func readScene(w http.ResponseWriter, r *http.Request) (db.DJScene, bool) {
 		return s, false
 	}
 	s.Volume = clamp01(s.Volume)
+	folders := []string{} // never nil: the column is NOT NULL
+	seen := map[string]bool{}
+	for _, f := range s.Folders {
+		rel, err := CleanRelPath(f)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return s, false
+		}
+		if !seen[rel] {
+			seen[rel] = true
+			folders = append(folders, rel)
+		}
+	}
+	s.Folders = folders
 	if s.FadeSeconds != nil && (*s.FadeSeconds < 0 || *s.FadeSeconds > 30) {
 		writeErr(w, http.StatusBadRequest, "fadeSeconds must be between 0 and 30")
 		return s, false

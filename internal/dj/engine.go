@@ -21,7 +21,7 @@ import (
 // control, so music keeps playing with every page closed and the monitor and
 // tablet always agree on state.
 //
-// Model: a "program" is what was asked for (a scene, a playlist, a single
+// Model: a "program" is what was asked for (a scene, a folder, a single
 // track, or the test tone): an ordered list of items plus loop/shuffle. The
 // program's current item plays as a voice. Voices being faded out (the old
 // scene during a crossfade, a skipped track) live in e.fading until silent.
@@ -40,9 +40,11 @@ type Engine struct {
 	paused    bool
 	pauseGain float64 // ramps 0..1 so pause/resume doesn't click
 
-	prog   *program
-	fading []*voice
+	prog    *program
+	fading  []*voice
 	progSeq int64
+
+	seekSeq int64 // latest Seek; an older one finishing its ffmpeg start is dropped
 
 	connected      bool
 	disconnectedAt time.Time
@@ -50,6 +52,13 @@ type Engine struct {
 	speakingOffIn  int // ticks until Speaking(false) after the silence tail
 
 	lastErr string
+
+	// Soundboard bus (sfx.go).
+	sfx          []*sfxVoice
+	sfxInstance  int64
+	sfxGain      float64
+	sfxSeen      map[string]bool // recent trigger requestIDs, for idempotent retries
+	sfxSeenOrder []string
 
 	notifyCh chan struct{}
 	OnState  func(State)
@@ -64,20 +73,22 @@ type item struct {
 	track *db.DJTrack // nil for the test tone
 	label string
 	open  func() (Source, error)
+	// openAt opens the item part-way through, for seeking. nil = can't seek.
+	openAt func(startMs int64) (Source, error)
 }
 
 type program struct {
-	seq        int64
-	sceneID    *int64
-	playlistID *int64
-	name       string
-	items      []item
-	order      []int // play order, indices into items
-	nextOrder  []int // order for the next loop pass, built lazily when shuffling
-	pos        int   // index into order of the current item
-	loop       bool
-	shuffle    bool
-	scale      float64 // per-scene volume
+	seq       int64
+	sceneID   *int64
+	folder    *string // set when a single folder was played
+	name      string
+	items     []item
+	order     []int // play order, indices into items
+	nextOrder []int // order for the next loop pass, built lazily when shuffling
+	pos       int   // index into order of the current item
+	loop      bool
+	shuffle   bool
+	scale     float64 // per-scene volume
 
 	cur *voice
 
@@ -159,6 +170,7 @@ func NewEngine(ffmpegPath, musicDir string, out Output, enc Encoder, volume, fad
 		curVolume:   clamp01(volume),
 		fadeSeconds: fadeSeconds,
 		pauseGain:   1,
+		sfxGain:     1,
 		notifyCh:    make(chan struct{}, 1),
 	}
 }
@@ -189,6 +201,7 @@ func (e *Engine) Run(ctx context.Context) {
 		case <-ctx.Done():
 			e.mu.Lock()
 			e.stopAllLocked()
+			e.sfx = nil
 			e.mu.Unlock()
 			return
 		case <-ticker.C:
@@ -208,6 +221,9 @@ func (e *Engine) tick(buf []byte) {
 			e.disconnectedAt = time.Now()
 			e.sending = false
 			e.speakingOffIn = 0
+			// Effects are moments, not programs: one that was cut off
+			// by a voice drop shouldn't play late after the reconnect.
+			e.sfx = nil
 		}
 		e.notify()
 	}
@@ -263,27 +279,38 @@ func (e *Engine) tick(buf []byte) {
 }
 
 // mixFrameLocked produces one frame. active=false means there is nothing to
-// play (or playback is fully paused) and the caller should go quiet.
+// play (nothing loaded, or music fully paused with no effects) and the
+// caller should go quiet.
+//
+// Signal chain: music voices -> pause gain -+
+//
+//	+-> master volume -> limiter
+//
+// effects -> pad gain -> soundboard gain ---+
+// Pause applies to music only, so effects still play while music is paused.
 func (e *Engine) mixFrameLocked() ([]int16, bool) {
-	if e.prog == nil && len(e.fading) == 0 {
+	musicOn := e.prog != nil || len(e.fading) > 0
+	if e.paused && e.pauseGain <= 0 {
+		// Fully paused: don't pull from the decoders, so music resumes
+		// exactly where it stopped.
+		musicOn = false
+	}
+	if !musicOn && len(e.sfx) == 0 {
 		return nil, false
 	}
 	pauseTarget := 1.0
 	if e.paused {
 		pauseTarget = 0
 	}
-	if e.paused && e.pauseGain <= 0 {
-		return nil, false
-	}
 
-	var acc [FrameLen]float64
+	var music, fx [FrameLen]float64
 	contributed := false
 
-	if p := e.prog; p != nil {
+	if p := e.prog; musicOn && p != nil {
 		// Two attempts: if the current track ends this tick, roll straight
 		// into the next one so there's no 20ms hole between tracks.
 		for attempt := 0; attempt < 2 && e.prog == p && p.cur != nil; attempt++ {
-			contributed = e.mixVoice(p.cur, acc[:]) || contributed
+			contributed = e.mixVoice(p.cur, music[:]) || contributed
 			if !p.cur.done {
 				break
 			}
@@ -292,23 +319,27 @@ func (e *Engine) mixFrameLocked() ([]int16, bool) {
 		}
 	}
 
-	kept := e.fading[:0]
-	for _, v := range e.fading {
-		contributed = e.mixVoice(v, acc[:]) || contributed
-		if v.done || v.env.finishedOut() {
-			v.src.Close()
-			continue
+	if musicOn {
+		kept := e.fading[:0]
+		for _, v := range e.fading {
+			contributed = e.mixVoice(v, music[:]) || contributed
+			if v.done || v.env.finishedOut() {
+				v.src.Close()
+				continue
+			}
+			kept = append(kept, v)
 		}
-		kept = append(kept, v)
+		for i := len(kept); i < len(e.fading); i++ {
+			e.fading[i] = nil
+		}
+		e.fading = kept
 	}
-	for i := len(kept); i < len(e.fading); i++ {
-		e.fading[i] = nil
-	}
-	e.fading = kept
+
+	fxOn := e.mixSfxLocked(fx[:])
 
 	// The last track ended this tick and nothing else is playing: go quiet
 	// now rather than sending one frame of silence first.
-	if !contributed && e.prog == nil && len(e.fading) == 0 {
+	if !contributed && !fxOn && e.prog == nil && len(e.fading) == 0 && len(e.sfx) == 0 {
 		return nil, false
 	}
 
@@ -321,23 +352,40 @@ func (e *Engine) mixFrameLocked() ([]int16, bool) {
 	} else if pauseTarget < e.pauseGain {
 		nextPause = math.Max(pauseTarget, e.pauseGain-pauseStep)
 	}
-	v0, v1 := e.curVolume*e.pauseGain, e.volume*nextPause
+	m0, m1 := e.curVolume*e.pauseGain, e.volume*nextPause
+	f0, f1 := e.curVolume, e.volume
 	out := make([]int16, FrameLen)
 	for i := 0; i < FrameSamples; i++ {
-		g := v0 + (v1-v0)*float64(i)/FrameSamples
+		t := float64(i) / FrameSamples
+		gm := m0 + (m1-m0)*t
+		gf := f0 + (f1-f0)*t
 		for c := 0; c < Channels; c++ {
-			s := acc[i*Channels+c] * g
-			if s > math.MaxInt16 {
-				s = math.MaxInt16
-			} else if s < math.MinInt16 {
-				s = math.MinInt16
-			}
-			out[i*Channels+c] = int16(s)
+			j := i*Channels + c
+			out[j] = int16(softClip(music[j]*gm + fx[j]*gf))
 		}
 	}
 	e.curVolume = e.volume
 	e.pauseGain = nextPause
 	return out, true
+}
+
+// softClip limits a sample to int16 range. Below the knee it is untouched;
+// above, it bends smoothly toward full scale instead of hard clipping. WHY:
+// an explosion on top of loud battle music sums past full scale, and hard
+// clipping that is harsh distortion, where this is a gentle squash.
+func softClip(s float64) float64 {
+	const full = math.MaxInt16
+	const knee = 0.85 * full
+	a := math.Abs(s)
+	if a <= knee {
+		return s
+	}
+	r := full - knee
+	y := knee + r*math.Tanh((a-knee)/r)
+	if s < 0 {
+		return -y
+	}
+	return y
 }
 
 // mixVoice adds one frame of v into acc. Returns true if v produced audio.
@@ -525,7 +573,7 @@ var ErrNotConnected = errors.New("the bot is not in a voice channel")
 // never stalls the mixer.
 func (e *Engine) startProgram(p *program, fadeSeconds float64) error {
 	if len(p.items) == 0 {
-		return errors.New("nothing to play: the playlist is empty or its files are missing")
+		return errors.New("nothing to play: no tracks in the chosen folders")
 	}
 	if p.shuffle {
 		p.order = shuffledOrder(len(p.items), -1)
@@ -597,9 +645,10 @@ func (e *Engine) trackItem(t db.DJTrack) item {
 	full := filepath.Join(e.musicDir, filepath.FromSlash(t.Path))
 	ff := e.ffmpeg
 	return item{
-		track: &t,
-		label: trackTitle(t),
-		open:  func() (Source, error) { return openFFmpeg(ff, full, 0) },
+		track:  &t,
+		label:  trackTitle(t),
+		open:   func() (Source, error) { return openFFmpeg(ff, full, 0) },
+		openAt: func(ms int64) (Source, error) { return openFFmpeg(ff, full, ms) },
 	}
 }
 
@@ -611,26 +660,34 @@ func trackTitle(t db.DJTrack) string {
 	return strings.TrimSuffix(base, path.Ext(base))
 }
 
-// playableTracks resolves track IDs to library tracks, dropping missing files.
-func playableTracks(ctx context.Context, ids []int64) ([]db.DJTrack, error) {
+// tracksInFolders returns the playable library tracks under any of folders
+// (sub-folders included), in path order, each track once even when folders
+// overlap ("Combat" and "Combat/Boss"). "" means the whole library.
+func tracksInFolders(ctx context.Context, folders []string) ([]db.DJTrack, error) {
 	all, err := db.ListDJTracks(ctx)
 	if err != nil {
 		return nil, err
 	}
-	byID := make(map[int64]db.DJTrack, len(all))
-	for _, t := range all {
-		byID[t.ID] = t
-	}
 	var out []db.DJTrack
-	for _, id := range ids {
-		if t, ok := byID[id]; ok && !t.Missing {
-			out = append(out, t)
+	for _, t := range all {
+		if t.Missing {
+			continue
+		}
+		for _, f := range folders {
+			if inFolder(t.Path, f) {
+				out = append(out, t)
+				break
+			}
 		}
 	}
 	return out, nil
 }
 
-// PlayScene crossfades to a scene's playlist. Tapping the scene that is
+func inFolder(trackPath, folder string) bool {
+	return folder == "" || strings.HasPrefix(trackPath, folder+"/")
+}
+
+// PlayScene crossfades to a scene's folders. Tapping the scene that is
 // already playing does nothing, so a double tap on the tablet doesn't restart
 // the music.
 func (e *Engine) PlayScene(ctx context.Context, sceneID int64, fadeOverride *float64) error {
@@ -651,27 +708,19 @@ func (e *Engine) PlayScene(ctx context.Context, sceneID int64, fadeOverride *flo
 	if scene == nil {
 		return errors.New("scene not found")
 	}
-	if scene.PlaylistID == nil {
-		return fmt.Errorf("scene %q has no playlist", scene.Name)
+	if len(scene.Folders) == 0 {
+		return fmt.Errorf("scene %q has no folders", scene.Name)
 	}
-	pl, err := db.GetDJPlaylist(ctx, *scene.PlaylistID)
-	if err != nil {
-		return err
-	}
-	if pl == nil {
-		return fmt.Errorf("scene %q has no playlist", scene.Name)
-	}
-	tracks, err := playableTracks(ctx, pl.TrackIDs)
+	tracks, err := tracksInFolders(ctx, scene.Folders)
 	if err != nil {
 		return err
 	}
 	p := &program{
-		sceneID:    &scene.ID,
-		playlistID: &pl.ID,
-		name:       scene.Name,
-		loop:       scene.Loop,
-		shuffle:    scene.Shuffle,
-		scale:      scene.Volume,
+		sceneID: &scene.ID,
+		name:    scene.Name,
+		loop:    scene.Loop,
+		shuffle: scene.Shuffle,
+		scale:   scene.Volume,
 	}
 	for _, t := range tracks {
 		p.items = append(p.items, e.trackItem(t))
@@ -686,20 +735,13 @@ func (e *Engine) PlayScene(ctx context.Context, sceneID int64, fadeOverride *flo
 	return e.startProgram(p, fade)
 }
 
-// PlayPlaylist plays a playlist in order, looping, optionally starting at a
-// given track.
-func (e *Engine) PlayPlaylist(ctx context.Context, playlistID int64, startTrackID *int64) error {
+// PlayFolder plays a folder (with its sub-folders) in order, looping,
+// optionally starting at a given track.
+func (e *Engine) PlayFolder(ctx context.Context, folder string, startTrackID *int64) error {
 	if !e.isConnected() {
 		return ErrNotConnected
 	}
-	pl, err := db.GetDJPlaylist(ctx, playlistID)
-	if err != nil {
-		return err
-	}
-	if pl == nil {
-		return errors.New("playlist not found")
-	}
-	tracks, err := playableTracks(ctx, pl.TrackIDs)
+	tracks, err := tracksInFolders(ctx, []string{folder})
 	if err != nil {
 		return err
 	}
@@ -711,7 +753,11 @@ func (e *Engine) PlayPlaylist(ctx context.Context, playlistID int64, startTrackI
 			}
 		}
 	}
-	p := &program{playlistID: &pl.ID, name: pl.Name, loop: true, scale: 1}
+	name := path.Base(folder)
+	if folder == "" {
+		name = "All music"
+	}
+	p := &program{folder: &folder, name: name, loop: true, scale: 1}
 	for _, t := range tracks {
 		p.items = append(p.items, e.trackItem(t))
 	}
@@ -740,8 +786,9 @@ func (e *Engine) PlayTone(seconds float64) error {
 		return ErrNotConnected
 	}
 	if seconds <= 0 {
-		seconds = 10
+		seconds = 2 // long enough to hear, short enough not to annoy the table
 	}
+	seconds = min(seconds, 30)
 	p := &program{name: "Test tone", scale: 1, items: []item{{
 		label: fmt.Sprintf("440 Hz tone, %.0fs", seconds),
 		open:  func() (Source, error) { return newTone(440, seconds), nil },
@@ -749,11 +796,16 @@ func (e *Engine) PlayTone(seconds float64) error {
 	return e.startProgram(p, 0)
 }
 
-// Stop fades out everything. fadeSeconds nil = the global fade.
+// stopFadeSeconds is how long Stop takes by default. Short enough to feel
+// instant, long enough not to click. (The global crossfade used to apply
+// here, which made Stop take six seconds.)
+const stopFadeSeconds = 0.25
+
+// Stop fades out everything. fadeSeconds nil = stopFadeSeconds.
 func (e *Engine) Stop(fadeSeconds *float64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	fade := e.fadeSeconds
+	fade := stopFadeSeconds
 	if fadeSeconds != nil {
 		fade = *fadeSeconds
 	}
@@ -786,6 +838,68 @@ func (e *Engine) Stop(fadeSeconds *float64) {
 		e.pauseGain = 1
 	}
 	e.notify()
+}
+
+// ErrNotPlaying is returned by SeekTo when nothing is playing.
+var ErrNotPlaying = errors.New("nothing is playing")
+
+// seekFadeFrames: a seek swaps decoders with a 40ms crossfade, just enough
+// to avoid a click at the cut.
+const seekFadeFrames = 2
+
+// SeekTo jumps the current track to positionMs. It restarts the decoder at
+// that point (ffmpeg -ss), which is quick for the formats we play but not
+// instant, so there can be a few tens of ms of silence after the cut.
+// Overlapping seeks (dragging on a slow machine) are fine: only the latest
+// is applied.
+func (e *Engine) SeekTo(positionMs int64) error {
+	e.mu.Lock()
+	p := e.prog
+	if p == nil || p.cur == nil {
+		e.mu.Unlock()
+		return ErrNotPlaying
+	}
+	cur := p.cur
+	it := cur.item
+	if it.openAt == nil {
+		e.mu.Unlock()
+		return errors.New("this can't be seeked")
+	}
+	if it.track != nil && it.track.DurationMs > 0 {
+		// Past the end would just end the track; land just before it.
+		positionMs = min(positionMs, max(0, it.track.DurationMs-500))
+	}
+	positionMs = max(0, positionMs)
+	e.seekSeq++
+	seq := e.seekSeq
+	e.mu.Unlock()
+
+	src, err := it.openAt(positionMs) // ffmpeg start, off the mixer lock
+	if err != nil {
+		return fmt.Errorf("seek: %w", err)
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if seq != e.seekSeq || e.prog != p || p.cur == nil || p.cur.item != it {
+		src.Close() // superseded, or the track changed meanwhile
+		return nil
+	}
+	old := p.cur
+	if e.paused {
+		// Paused voices aren't mixed, so a fading one would hang around
+		// and play its tail on resume.
+		old.src.Close()
+	} else {
+		old.env = fadeOut(seekFadeFrames)
+		e.fading = append(e.fading, old)
+	}
+	p.cur = &voice{
+		src: src, item: it, scale: old.scale, env: fadeIn(seekFadeFrames),
+		framesPlayed: positionMs / FrameMs,
+	}
+	e.notify()
+	return nil
 }
 
 // Next skips to the next item with a short crossfade.
@@ -869,7 +983,7 @@ type State struct {
 	Playing     bool        `json:"playing"`
 	Paused      bool        `json:"paused"`
 	SceneID     *int64      `json:"sceneId"`
-	PlaylistID  *int64      `json:"playlistId"`
+	Folder      *string     `json:"folder"`
 	ProgramName string      `json:"programName"`
 	Track       *TrackInfo  `json:"track"`
 	PositionMs  int64       `json:"positionMs"`
@@ -880,6 +994,9 @@ type State struct {
 	Volume      float64     `json:"volume"`
 	FadeSeconds float64     `json:"fadeSeconds"`
 	Error       string      `json:"error,omitempty"`
+
+	Sfx     []SfxPlaying `json:"sfx"`
+	SfxGain float64      `json:"sfxGain"`
 }
 
 func itemInfo(it *item) TrackInfo {
@@ -903,6 +1020,8 @@ func (e *Engine) State() State {
 		Error:       e.lastErr,
 		At:          time.Now().UnixMilli(),
 		UpNext:      []TrackInfo{},
+		Sfx:         e.sfxStateLocked(),
+		SfxGain:     e.sfxGain,
 	}
 	p := e.prog
 	if p == nil {
@@ -910,7 +1029,7 @@ func (e *Engine) State() State {
 	}
 	st.Playing = true
 	st.SceneID = p.sceneID
-	st.PlaylistID = p.playlistID
+	st.Folder = p.folder
 	st.ProgramName = p.name
 	st.Loop = p.loop
 	st.Shuffle = p.shuffle
@@ -958,7 +1077,7 @@ func (e *Engine) notifyLoop(ctx context.Context) {
 		case <-e.notifyCh:
 		case <-t.C:
 			e.mu.Lock()
-			active := e.prog != nil && !e.paused && e.connected
+			active := (e.prog != nil && !e.paused || len(e.sfx) > 0) && e.connected
 			e.mu.Unlock()
 			if !active {
 				continue

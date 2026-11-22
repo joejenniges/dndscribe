@@ -3,7 +3,7 @@
   import { dj } from '$lib/api';
   import { addToast } from '$lib/stores/toast';
   import type { DjState } from '$lib/types';
-  import { fmtMs, FADE_OPTIONS } from './format';
+  import { fmtMs } from './format';
 
   let { st }: { st: DjState | null } = $props();
 
@@ -59,11 +59,6 @@
       addToast((e as Error).message, 'error');
     }
   }
-
-  async function setFade(e: Event) {
-    const v = Number((e.target as HTMLSelectElement).value);
-    await act(() => dj.fade(v));
-  }
 </script>
 
 <div class="now-playing" aria-label="Now playing">
@@ -92,16 +87,10 @@
       <button class="icon-btn bordered big" onclick={() => act(dj.pause)} disabled={!st?.playing} aria-label="Pause" title="Pause">&#10074;&#10074;</button>
     {/if}
     <button class="icon-btn bordered big" onclick={() => act(dj.next)} disabled={!st?.playing} aria-label="Next track" title="Next track">&#9197;</button>
-    <button class="icon-btn bordered big" onclick={() => act(() => dj.stop())} disabled={!st?.playing} aria-label="Stop (fade out)" title="Stop (fade out)">&#9632;</button>
+    <button class="icon-btn bordered big" onclick={() => act(() => dj.stop())} disabled={!st?.playing} aria-label="Stop" title="Stop">&#9632;</button>
     <label class="vol">
       <span class="subtle tiny">Volume {volume}%</span>
       <input type="range" min="0" max="100" bind:value={volume} oninput={onVolumeInput} onchange={onVolumeChange} aria-label="Master volume" />
-    </label>
-    <label class="vol">
-      <span class="subtle tiny">Fade</span>
-      <select class="select" value={st?.fadeSeconds ?? 6} onchange={setFade} aria-label="Crossfade length">
-        {#each FADE_OPTIONS as f}<option value={f}>{f} s</option>{/each}
-      </select>
     </label>
   </div>
 </div>
@@ -125,7 +114,6 @@
   .bordered { border: 1px solid var(--border-strong); border-radius: var(--radius); }
   .vol { display: flex; flex-direction: column; gap: 2px; }
   .vol input { width: 150px; accent-color: var(--accent); height: 28px; }
-  .vol .select { min-height: 36px; width: 84px; }
 
   @media (max-width: 760px) {
     .now-playing { flex-direction: column; align-items: stretch; padding: 12px 16px; gap: 10px; }

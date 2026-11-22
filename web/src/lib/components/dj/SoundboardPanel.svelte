@@ -1,0 +1,604 @@
+<script lang="ts">
+  // Soundboard: pads organised in tabs. Tapping a pad plays it into the
+  // Discord channel through the server mixer, on top of the music; tapping a
+  // playing pad restarts it from the beginning (the server does that, and
+  // never stacks copies). Different pads overlap.
+  //
+  // Edit layout mode: drag pads to reorder them or onto a tab to move them
+  // there. Every pad also gets arrow buttons, because HTML5 drag and drop
+  // doesn't work on touch screens or from the keyboard.
+  import { dj } from '$lib/api';
+  import { addToast } from '$lib/stores/toast';
+  import { djLibraryVersion } from '$lib/stores/dj';
+  import type { DjState, SfxPad, SfxTab } from '$lib/types';
+  import PadEditor from './PadEditor.svelte';
+  import { SCENE_COLORS, fmtMs } from './format';
+  import { isAudioName, AUDIO_EXTS, type PickedFile } from './library';
+
+  let { st, channelName }: { st: DjState | null; channelName: string | null } = $props();
+
+  let tabs = $state<SfxTab[]>([]);
+  let pads = $state<SfxPad[]>([]);
+  let loaded = $state(false);
+  let activeTabId = $state<number | null>(null);
+  let editMode = $state(false);
+
+  const TAB_KEY = 'dj.sfx.tab';
+
+  async function load() {
+    try {
+      const r = await dj.sfx.list();
+      tabs = r.tabs;
+      pads = r.pads;
+      if (activeTabId === null || !tabs.some((t) => t.id === activeTabId)) {
+        let saved: number | null = null;
+        try {
+          saved = Number(localStorage.getItem(TAB_KEY)) || null;
+        } catch {
+          /* storage unavailable */
+        }
+        activeTabId = tabs.find((t) => t.id === saved)?.id ?? tabs[0]?.id ?? null;
+      }
+    } catch (e) {
+      addToast(`Couldn't load the soundboard: ${(e as Error).message}`, 'error');
+    } finally {
+      loaded = true;
+    }
+  }
+
+  $effect(() => {
+    $djLibraryVersion;
+    load();
+  });
+
+  function selectTab(id: number) {
+    activeTabId = id;
+    try {
+      localStorage.setItem(TAB_KEY, String(id));
+    } catch {
+      /* storage unavailable */
+    }
+  }
+
+  const connected = $derived(!!st?.connected);
+  const activeTab = $derived(tabs.find((t) => t.id === activeTabId) ?? null);
+  const tabPads = $derived(
+    pads.filter((p) => p.tabId === activeTabId).sort((a, b) => a.position - b.position || a.id - b.id),
+  );
+  const padCount = (tabId: number) => pads.filter((p) => p.tabId === tabId).length;
+  const playing = $derived(new Map((st?.sfx ?? []).map((s) => [s.padId, s])));
+
+  // Progress bars: interpolate between server pushes while anything plays.
+  let now = $state(Date.now());
+  $effect(() => {
+    if (!st?.sfx?.length) return;
+    const t = setInterval(() => (now = Date.now()), 100);
+    return () => clearInterval(t);
+  });
+  function progress(padId: number): number {
+    const s = playing.get(padId);
+    if (!s || !s.durationMs) return 0;
+    const elapsed = s.positionMs + (st?.receivedAt ? now - st.receivedAt : 0);
+    return Math.min(1, Math.max(0, elapsed / s.durationMs));
+  }
+  function elapsedMs(padId: number): number {
+    const s = playing.get(padId);
+    return s ? Math.min(s.durationMs, s.positionMs + (st?.receivedAt ? now - st.receivedAt : 0)) : 0;
+  }
+
+  const padColor = (p: SfxPad) => p.color || SCENE_COLORS[p.id % SCENE_COLORS.length];
+
+  // ---- Playback ----
+
+  // A fresh id per tap: the server treats a repeated id as a network retry
+  // of the same tap and ignores it, while a new id restarts the pad.
+  // (Not crypto.randomUUID: it's missing on plain-http LAN addresses.)
+  const requestId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+  async function tap(p: SfxPad) {
+    if (editMode) {
+      openEditor(p);
+      return;
+    }
+    try {
+      await dj.sfx.trigger(p.id, requestId());
+    } catch (e) {
+      addToast((e as Error).message, 'error');
+    }
+  }
+
+  async function stopPad(id: number) {
+    try {
+      await dj.sfx.stop(id);
+    } catch (e) {
+      addToast((e as Error).message, 'error');
+    }
+  }
+
+  async function stopAll() {
+    try {
+      await dj.sfx.stopAll();
+    } catch (e) {
+      addToast((e as Error).message, 'error');
+    }
+  }
+
+  // Soundboard volume: send at most every 120ms while dragging, plus the
+  // final value, so the mixer follows the slider without flooding requests.
+  let gainLocal = $state<number | null>(null);
+  const gainPct = $derived(gainLocal ?? Math.round((st?.sfxGain ?? 1) * 100));
+  let gainTimer: ReturnType<typeof setTimeout> | undefined;
+  let gainPending = false;
+  function onGain(e: Event) {
+    gainLocal = Number((e.currentTarget as HTMLInputElement).value);
+    if (gainTimer) {
+      gainPending = true;
+      return;
+    }
+    sendGain();
+  }
+  function sendGain() {
+    const v = gainLocal;
+    if (v === null) return;
+    dj.sfx.gain(v / 100).catch((e) => addToast((e as Error).message, 'error'));
+    gainTimer = setTimeout(() => {
+      gainTimer = undefined;
+      if (gainPending) {
+        gainPending = false;
+        sendGain();
+      } else {
+        gainLocal = null;
+      }
+    }, 120);
+  }
+
+  // ---- Pad editor ----
+  let editorOpen = $state(false);
+  let editingPad = $state<SfxPad | null>(null);
+  function openEditor(p: SfxPad) {
+    editingPad = p;
+    editorOpen = true;
+  }
+
+  // ---- Tabs ----
+  let addingTab = $state(false);
+  let newTabTitle = $state('');
+  let tabTitleEdit = $state('');
+  let confirmTabDelete = $state(false);
+
+  $effect(() => {
+    tabTitleEdit = activeTab?.title ?? '';
+    confirmTabDelete = false;
+  });
+
+  async function addTab() {
+    const title = newTabTitle.trim();
+    if (!title) return;
+    try {
+      const t = await dj.sfx.tabs.create(title);
+      newTabTitle = '';
+      addingTab = false;
+      await load();
+      selectTab(t.id);
+    } catch (e) {
+      addToast(`Couldn't add tab: ${(e as Error).message}`, 'error');
+    }
+  }
+
+  async function renameTab() {
+    const title = tabTitleEdit.trim();
+    if (!activeTab || !title || title === activeTab.title) return;
+    try {
+      await dj.sfx.tabs.rename(activeTab.id, title);
+    } catch (e) {
+      addToast(`Couldn't rename: ${(e as Error).message}`, 'error');
+    }
+  }
+
+  async function moveTab(d: number) {
+    const i = tabs.findIndex((t) => t.id === activeTabId);
+    const j = i + d;
+    if (i < 0 || j < 0 || j >= tabs.length) return;
+    const next = [...tabs];
+    [next[i], next[j]] = [next[j], next[i]];
+    tabs = next;
+    try {
+      await dj.sfx.tabs.order(next.map((t) => t.id));
+    } catch (e) {
+      addToast(`Couldn't save order: ${(e as Error).message}`, 'error');
+      load();
+    }
+  }
+
+  async function deleteTab() {
+    if (!activeTab) return;
+    if (!confirmTabDelete && padCount(activeTab.id) > 0) {
+      confirmTabDelete = true;
+      return;
+    }
+    try {
+      await dj.sfx.tabs.delete(activeTab.id);
+      activeTabId = null;
+    } catch (e) {
+      addToast(`Couldn't delete tab: ${(e as Error).message}`, 'error');
+    }
+  }
+
+  // ---- Pad layout ----
+
+  async function arrange(tabId: number, ids: number[]) {
+    // Optimistic: reflect the new layout now, then persist.
+    const pos = new Map(ids.map((id, i) => [id, i]));
+    pads = pads.map((p) => (pos.has(p.id) ? { ...p, tabId, position: pos.get(p.id)! } : p));
+    try {
+      await dj.sfx.tabs.arrange(tabId, ids);
+    } catch (e) {
+      addToast(`Couldn't save layout: ${(e as Error).message}`, 'error');
+      load();
+    }
+  }
+
+  function movePad(i: number, d: number) {
+    const j = i + d;
+    if (!activeTabId || j < 0 || j >= tabPads.length) return;
+    const ids = tabPads.map((p) => p.id);
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    arrange(activeTabId, ids);
+  }
+
+  let dragId = $state<number | null>(null);
+  let dropBefore = $state<number | null>(null); // pad id, or -1 for the end
+  let dropTab = $state<number | null>(null);
+
+  function onPadDragStart(e: DragEvent, p: SfxPad) {
+    dragId = p.id;
+    e.dataTransfer?.setData('text/x-dndscribe-pad', String(p.id));
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+  }
+  function onPadDragOver(e: DragEvent, target: number) {
+    if (dragId === null) return;
+    e.preventDefault();
+    dropBefore = target;
+  }
+  function onPadDrop(e: DragEvent, target: number) {
+    if (dragId === null || !activeTabId) return;
+    e.preventDefault();
+    const ids = tabPads.map((p) => p.id).filter((id) => id !== dragId);
+    const at = target === -1 ? ids.length : ids.indexOf(target);
+    ids.splice(at < 0 ? ids.length : at, 0, dragId);
+    arrange(activeTabId, ids);
+    endDrag();
+  }
+  function onTabDrop(e: DragEvent, tabId: number) {
+    if (dragId === null) return;
+    e.preventDefault();
+    if (tabId !== activeTabId) {
+      const ids = pads.filter((p) => p.tabId === tabId).sort((a, b) => a.position - b.position).map((p) => p.id);
+      arrange(tabId, [...ids, dragId]);
+    }
+    endDrag();
+  }
+  function endDrag() {
+    dragId = dropBefore = dropTab = null;
+  }
+
+  // ---- Upload ----
+  let fileInput: HTMLInputElement | undefined = $state();
+  let uploadTotal = $state(0);
+  let uploadDone = $state(0);
+
+  /** Upload effects into the current tab (also called by the page on a drop). */
+  export async function addFiles(files: PickedFile[]) {
+    const audio = files.filter((f) => isAudioName(f.file.name));
+    const skipped = files.length - audio.length;
+    if (audio.length === 0) {
+      addToast('No audio files to add', 'error');
+      return;
+    }
+    if (uploadTotal > uploadDone) {
+      addToast('Wait for the current upload to finish', 'error');
+      return;
+    }
+    let tabId = activeTabId;
+    try {
+      if (tabId === null) {
+        const t = await dj.sfx.tabs.create('Effects');
+        tabId = t.id;
+        selectTab(t.id);
+      }
+    } catch (e) {
+      addToast(`Couldn't create a tab: ${(e as Error).message}`, 'error');
+      return;
+    }
+    uploadTotal = audio.length;
+    uploadDone = 0;
+    const failures: string[] = [];
+    let next = 0;
+    const worker = async () => {
+      while (next < audio.length) {
+        const f = audio[next++];
+        try {
+          await dj.sfx.upload(tabId!, f.file);
+        } catch (e) {
+          failures.push((e as Error).message);
+        }
+        uploadDone++;
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    const ok = audio.length - failures.length;
+    const extra = skipped ? `, ${skipped} not audio` : '';
+    if (failures.length) addToast(`Added ${ok}, ${failures.length} failed: ${failures[0]}${extra}`, 'error');
+    else addToast(`Added ${ok} sound${ok === 1 ? '' : 's'}${extra}`, 'success');
+    uploadTotal = uploadDone = 0;
+    load();
+  }
+
+  function onPick(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const files = Array.from(input.files ?? []).map((file) => ({ file, rel: file.name }));
+    input.value = '';
+    addFiles(files);
+  }
+</script>
+
+<section class="sb">
+  <div class="sb-head">
+    <div>
+      <h2 class="page-sub">Soundboard</h2>
+      <p class="subtle small">Tap a pad to play it into the voice channel over the music. Tap it again to restart it.</p>
+    </div>
+    <div class="actions">
+      <button class="btn" class:btn-primary={editMode} onclick={() => (editMode = !editMode)} aria-pressed={editMode}>
+        {editMode ? 'Done' : 'Edit layout'}
+      </button>
+      <button class="btn-primary" onclick={() => fileInput?.click()} disabled={uploadTotal > 0}>
+        {uploadTotal > 0 ? `Uploading ${uploadDone}/${uploadTotal}` : 'Upload effects'}
+      </button>
+      <input bind:this={fileInput} type="file" multiple accept={AUDIO_EXTS.map((e) => '.' + e).join(',')} onchange={onPick} hidden />
+    </div>
+  </div>
+
+  <div class="chips">
+    <span class="chip"><span class="k">Voice channel</span> {connected ? (channelName ?? 'connected') : 'Not connected'}</span>
+    <span class="chip"><span class="k">Playing</span> {st?.sfx?.length ?? 0}</span>
+    <span class="chip"><span class="k">Sounds</span> {pads.length}</span>
+  </div>
+
+  <div class="sb-body">
+    <div class="card board">
+      <div class="tabstrip" role="tablist" aria-label="Soundboard tabs">
+        {#each tabs as t (t.id)}
+          <button
+            role="tab"
+            class="tab"
+            class:active={t.id === activeTabId}
+            class:droptarget={dropTab === t.id}
+            aria-selected={t.id === activeTabId}
+            onclick={() => selectTab(t.id)}
+            ondragover={(e) => { if (dragId !== null) { e.preventDefault(); dropTab = t.id; } }}
+            ondragleave={() => (dropTab = null)}
+            ondrop={(e) => onTabDrop(e, t.id)}
+          >
+            {t.title} <span class="count">{padCount(t.id)}</span>
+          </button>
+        {/each}
+        {#if addingTab}
+          <form class="addtab" onsubmit={(e) => { e.preventDefault(); addTab(); }}>
+            <input class="input" bind:value={newTabTitle} placeholder="Tab name" aria-label="New tab name" />
+            <button class="btn btn-sm" type="submit" disabled={!newTabTitle.trim()}>Add</button>
+            <button class="btn-ghost btn-sm" type="button" onclick={() => (addingTab = false)}>Cancel</button>
+          </form>
+        {:else}
+          <button class="tab add" onclick={() => (addingTab = true)}>+ Add tab</button>
+        {/if}
+      </div>
+
+      {#if editMode && activeTab}
+        <div class="tab-edit">
+          <input class="input" bind:value={tabTitleEdit} onchange={renameTab} aria-label="Tab name" />
+          <button class="icon-btn" onclick={() => moveTab(-1)} disabled={tabs[0]?.id === activeTabId} aria-label="Move tab left">&#9664;</button>
+          <button class="icon-btn" onclick={() => moveTab(1)} disabled={tabs[tabs.length - 1]?.id === activeTabId} aria-label="Move tab right">&#9654;</button>
+          <button class="btn btn-sm" class:btn-danger={confirmTabDelete} onclick={deleteTab}>
+            {confirmTabDelete ? `Delete tab and its ${padCount(activeTab.id)} sounds?` : 'Delete tab'}
+          </button>
+        </div>
+      {/if}
+
+      {#if loaded && tabs.length === 0}
+        <div class="empty">
+          <p>No sound effects yet.</p>
+          <p class="subtle small">Upload effects or drop audio files on this page. They go into a tab you can rename.</p>
+        </div>
+      {:else}
+        <div class="grid" class:editing={editMode}>
+          {#each tabPads as p, i (p.id)}
+            {@const play = playing.get(p.id)}
+            <div
+              class="pad-wrap"
+              class:dragging={dragId === p.id}
+              class:dropbefore={dropBefore === p.id && dragId !== p.id}
+              draggable={editMode}
+              ondragstart={(e) => onPadDragStart(e, p)}
+              ondragover={(e) => onPadDragOver(e, p.id)}
+              ondrop={(e) => onPadDrop(e, p.id)}
+              ondragend={endDrag}
+              role="listitem"
+            >
+              <button
+                class="pad"
+                class:playing={!!play}
+                class:hasimg={!!p.image}
+                style:--pad-color={padColor(p)}
+                style:background-image={p.image ? `url(${dj.sfx.imageUrl(p.image)})` : undefined}
+                onclick={() => tap(p)}
+                oncontextmenu={(e) => { e.preventDefault(); openEditor(p); }}
+                disabled={!editMode && !connected}
+                aria-label={editMode ? `Edit ${p.label}` : `${play ? 'Restart' : 'Play'} ${p.label}`}
+                title={editMode ? 'Edit' : connected ? 'Right-click to customise' : 'Join a voice channel first'}
+              >
+                {#if play}<span class="badge-playing">Playing</span>{/if}
+                <span class="pad-label">{p.label}</span>
+                <span class="pad-meta">
+                  {#if play}{fmtMs(elapsedMs(p.id))} / {fmtMs(p.durationMs)} · tap to restart{:else}{fmtMs(p.durationMs)}{/if}
+                </span>
+                {#if play}
+                  {#key play.instance}<span class="bar" style:width="{progress(p.id) * 100}%"></span>{/key}
+                {/if}
+              </button>
+              {#if editMode}
+                <div class="pad-move">
+                  <button class="icon-btn" onclick={() => movePad(i, -1)} disabled={i === 0} aria-label="Move {p.label} earlier">&#9664;</button>
+                  <button class="icon-btn" onclick={() => movePad(i, 1)} disabled={i === tabPads.length - 1} aria-label="Move {p.label} later">&#9654;</button>
+                </div>
+              {/if}
+            </div>
+          {/each}
+          <button
+            class="pad add-pad"
+            class:dropbefore={dropBefore === -1}
+            onclick={() => fileInput?.click()}
+            ondragover={(e) => onPadDragOver(e, -1)}
+            ondrop={(e) => onPadDrop(e, -1)}
+          >
+            <span class="plus">+</span>
+            <span>Add sound effect</span>
+          </button>
+        </div>
+        <p class="tiny subtle hint">
+          {editMode ? 'Drag pads to reorder, or onto a tab to move them. Tap a pad to edit it.' : 'Right-click a pad, or use Edit layout, to rename it or change its colour or image.'}
+        </p>
+      {/if}
+    </div>
+
+    <aside class="card controls">
+      <h3 class="section-title">Soundboard controls</h3>
+      <label class="field">
+        <span class="row"><span>Soundboard volume</span><span class="subtle">{gainPct}%</span></span>
+        <input type="range" min="0" max="100" value={gainPct} oninput={onGain} aria-label="Soundboard volume" />
+        <span class="tiny subtle">Separate from the music. The master volume in the bar below sets both.</span>
+      </label>
+
+      <div class="active">
+        <div class="eyebrow">Playing now</div>
+        {#if !st?.sfx?.length}
+          <p class="tiny subtle">Nothing.</p>
+        {:else}
+          <ul>
+            {#each st.sfx as s (s.instance)}
+              <li>
+                <span class="name">{s.label}</span>
+                <span class="tiny subtle t">{fmtMs(elapsedMs(s.padId))} / {fmtMs(s.durationMs)}</span>
+                <button class="icon-btn" onclick={() => stopPad(s.padId)} aria-label="Stop {s.label}">&#9632;</button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+
+      <dl class="rules">
+        <div><dt>Tap a stopped pad</dt><dd>Play</dd></div>
+        <div><dt>Tap a playing pad</dt><dd>Restart</dd></div>
+        <div><dt>Tap different pads</dt><dd>Overlap</dd></div>
+      </dl>
+
+      <button class="btn stopall" onclick={stopAll} disabled={!st?.sfx?.length}>&#9632; Stop all effects</button>
+    </aside>
+  </div>
+</section>
+
+<PadEditor bind:open={editorOpen} pad={editingPad} {tabs} onchanged={load} />
+
+<style>
+  .sb { display: flex; flex-direction: column; gap: 18px; }
+  .sb-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+  .page-sub { font-size: 22px; font-weight: 700; margin: 0 0 4px; }
+  .sb-head p { margin: 0; }
+  .actions { display: flex; gap: 10px; }
+
+  .chips { display: flex; gap: 10px; flex-wrap: wrap; }
+  .chip { padding: 8px 14px; border: 1px solid var(--border-strong); border-radius: var(--radius); font-size: 13px; font-weight: 600; }
+  .chip .k { color: var(--text-2); font-weight: 500; text-transform: uppercase; font-size: 11px; letter-spacing: 0.06em; margin-right: 6px; }
+
+  .sb-body { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; align-items: start; }
+  .board { padding: 18px 20px; }
+  .controls { padding: 20px; display: flex; flex-direction: column; gap: 20px; }
+
+  .tabstrip { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding-bottom: 14px; border-bottom: 1px solid var(--border-color); margin-bottom: 14px; }
+  .tab {
+    min-height: var(--touch); padding: 0 16px; border-radius: var(--radius); font-weight: 600; font-size: 14px;
+    background: var(--surface-raised); border: 1px solid var(--border-strong); color: var(--text-2);
+  }
+  .tab.active { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+  .tab.droptarget { outline: 2px dashed var(--accent); outline-offset: 2px; }
+  .tab .count { color: var(--text-3); font-weight: 500; margin-left: 4px; }
+  .tab.add { background: none; border-style: dashed; color: var(--accent-text, var(--accent)); }
+  .addtab { display: flex; gap: 6px; align-items: center; }
+  .addtab .input { width: 160px; }
+
+  .tab-edit { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  .tab-edit .input { width: 200px; }
+  .tab-edit .icon-btn { width: var(--touch); height: var(--touch); border: 1px solid var(--border-strong); border-radius: var(--radius); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+  .pad-wrap { position: relative; }
+  .pad-wrap.dragging { opacity: 0.4; }
+  .pad-wrap.dropbefore::before, .add-pad.dropbefore::before {
+    content: ''; position: absolute; left: -7px; top: 6px; bottom: 6px; width: 3px; border-radius: 2px; background: var(--accent);
+  }
+  .pad {
+    --pad-color: var(--accent);
+    position: relative; overflow: hidden; width: 100%; min-height: 128px; padding: 14px; text-align: left;
+    display: flex; flex-direction: column; justify-content: flex-end; gap: 3px;
+    border-radius: var(--radius-lg); border: 1px solid color-mix(in srgb, var(--pad-color) 45%, var(--border-strong));
+    background-color: color-mix(in srgb, var(--pad-color) 22%, var(--surface));
+    background-size: cover; background-position: center;
+    color: var(--text); transition: transform 0.06s, box-shadow 0.15s;
+  }
+  /* Darken the bottom of image pads so the label stays readable. */
+  .pad.hasimg::after { content: ''; position: absolute; inset: 0; background: linear-gradient(to top, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.05) 60%); }
+  .pad > * { position: relative; z-index: 1; }
+  .pad:active:not(:disabled) { transform: scale(0.97); }
+  .pad:disabled { opacity: 0.55; cursor: not-allowed; }
+  .pad.playing { border-color: var(--pad-color); box-shadow: 0 0 0 2px var(--pad-color), 0 6px 22px color-mix(in srgb, var(--pad-color) 30%, transparent); }
+  .grid.editing .pad { border-style: dashed; }
+  .pad-label { font-size: 16px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pad-meta { font-size: 12px; color: var(--text-2); }
+  .pad.hasimg .pad-meta { color: rgba(255, 255, 255, 0.8); }
+  .badge-playing {
+    position: absolute !important; top: 10px; right: 10px; padding: 2px 8px; border-radius: 999px;
+    background: var(--pad-color); color: #111; font-size: 11px; font-weight: 700; text-transform: uppercase;
+  }
+  .bar { position: absolute !important; left: 0; bottom: 0; height: 4px; background: var(--pad-color); transition: width 0.1s linear; }
+  .pad-move { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; z-index: 2; }
+  .pad-move .icon-btn { width: 40px; height: 40px; background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: var(--radius); }
+  .add-pad {
+    background: none; border: 1px dashed var(--border-strong); color: var(--text-2);
+    align-items: center; justify-content: center; text-align: center;
+  }
+  .add-pad .plus { font-size: 24px; color: var(--accent); }
+  .hint { margin: 14px 0 0; }
+  .empty { padding: 30px 10px; text-align: center; }
+  .empty p { margin: 4px 0; }
+
+  .controls .row { display: flex; justify-content: space-between; }
+  input[type='range'] { accent-color: var(--accent); height: 28px; width: 100%; }
+  .active ul { list-style: none; margin: 8px 0 0; padding: 0; }
+  .active li { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border-color); }
+  .active .name { flex: 1; min-width: 0; font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .active .t { font-variant-numeric: tabular-nums; }
+  .active .icon-btn { width: 36px; height: 36px; }
+  .rules { margin: 0; }
+  .rules div { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border-color); font-size: 13px; }
+  .rules dt { color: var(--text-2); }
+  .rules dd { margin: 0; color: var(--text-2); }
+  .stopall { width: 100%; min-height: var(--touch); }
+
+  @media (max-width: 1000px) {
+    .sb-body { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 560px) {
+    .grid { grid-template-columns: repeat(2, 1fr); }
+    .board { padding: 14px; }
+  }
+</style>
