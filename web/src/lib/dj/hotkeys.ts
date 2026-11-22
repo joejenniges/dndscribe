@@ -29,7 +29,8 @@ export const HOTKEYS: { keys: string; what: string }[] = [
   { keys: 'A', what: 'Auto DJ on / off' },
   { keys: '← →', what: 'Nudge the crossfader toward A / B (Shift: all the way)' },
   { keys: '↑ ↓', what: 'Master volume up / down' },
-  { keys: '1 – 9, 0', what: 'Sound effects 1 – 10 in the open soundboard tab' },
+  { keys: '1 – 9, 0', what: 'Sound effects 1 – 10 in the open soundboard tab (or the search results)' },
+  { keys: '/', what: 'Search the soundboard (Enter plays the first match, Esc clears)' },
   { keys: 'Shift + 1 – 9', what: 'Play scene 1 – 9' },
   { keys: 'Esc', what: 'Stop sound effects' },
   { keys: 'Shift + Esc', what: 'Stop all (music and effects)' },
@@ -43,6 +44,8 @@ export interface HotkeyTargets {
   /** Triggers pad i (0-based) of the visible soundboard tab; false if none. */
   pad: (i: number) => boolean;
   help: () => void;
+  /** Focus the soundboard search. */
+  search?: () => void;
 }
 
 const typing = (el: Element | null) =>
@@ -80,6 +83,7 @@ export function installHotkeys(t: HotkeyTargets): () => void {
     };
 
     if (e.key === '?') return handled(t.help);
+    if (e.key === '/' && t.search) return handled(t.search);
     if (e.key === 'Tab') {
       // Drop focus from whatever was clicked last, so Space can't also
       // "press" that button.

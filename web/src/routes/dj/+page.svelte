@@ -292,6 +292,7 @@
       scenes: () => scenes,
       pad: (i) => soundboard?.triggerAt(i) ?? false,
       help: () => (keysOpen = true),
+      search: () => soundboard?.focusSearch(),
     }),
   );
   // Start with the on-air deck selected, so Space first pauses what's

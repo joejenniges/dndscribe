@@ -16,6 +16,7 @@
   import Fader from './Fader.svelte';
   import { SCENE_COLORS, fmtMs } from './format';
   import { isAudioName, AUDIO_EXTS, fromFileList, type PickedFile } from './library';
+  import { fuzzyFilter } from '$lib/dj/fuzzy';
 
   let {
     st,
@@ -77,6 +78,32 @@
   const tabPads = $derived(
     pads.filter((p) => p.tabId === activeTabId).sort((a, b) => a.position - b.position || a.id - b.id),
   );
+  // Search covers every tab, best match first. While searching, the grid
+  // (and the 1-0 hotkeys) show the results instead of the open tab, and
+  // reordering is off since the order is the ranking, not the tab's.
+  let query = $state('');
+  let searchEl: HTMLInputElement | undefined = $state();
+  const searching = $derived(query.trim() !== '');
+  const tabTitle = (id: number) => tabs.find((t) => t.id === id)?.title ?? '';
+  const results = $derived(
+    searching ? fuzzyFilter(pads, query, (p) => [{ text: p.label }, { text: tabTitle(p.tabId), weight: 0.6 }]) : [],
+  );
+  const shown = $derived(searching ? results : tabPads);
+  export function focusSearch() {
+    searchEl?.focus();
+    searchEl?.select();
+  }
+  function searchKey(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (query) query = '';
+      else searchEl?.blur();
+    } else if (e.key === 'Enter' && results[0]) {
+      e.preventDefault();
+      tap(results[0]);
+    }
+  }
   const padCount = (tabId: number) => pads.filter((p) => p.tabId === tabId).length;
   const playing = $derived(new Map((st?.sfx ?? []).map((s) => [s.padId, s])));
 
@@ -117,7 +144,7 @@
 
   /** Keyboard shortcut: trigger the i-th pad of the open tab. */
   export function triggerAt(i: number): boolean {
-    const p = tabPads[i];
+    const p = shown[i];
     if (!p || editMode) return false;
     tap(p);
     return true;
@@ -381,15 +408,22 @@
     </div>
   </header>
 
-  <div class="tabstrip" role="tablist" aria-label="Soundboard tabs">
+  {#if pads.length > 0}
+    <div class="search">
+      <input class="input" type="search" bind:this={searchEl} bind:value={query} onkeydown={searchKey}
+        placeholder="Search sounds  ( / )" aria-label="Search sound effects in every tab" />
+    </div>
+  {/if}
+
+  <div class="tabstrip" role="tablist" aria-label="Soundboard tabs" class:dim={searching}>
     {#each tabs as t (t.id)}
       <button
         role="tab"
         class="tab"
-        class:active={t.id === activeTabId}
+        class:active={t.id === activeTabId && !searching}
         class:droptarget={dropTab === t.id}
         aria-selected={t.id === activeTabId}
-        onclick={() => selectTab(t.id)}
+        onclick={() => { query = ''; selectTab(t.id); }}
         ondragover={(e) => { if (dragId !== null) { e.preventDefault(); dropTab = t.id; } }}
         ondragleave={() => (dropTab = null)}
         ondrop={(e) => onTabDrop(e, t.id)}
@@ -410,7 +444,7 @@
     {/if}
   </div>
 
-  {#if editMode && activeTab}
+  {#if editMode && activeTab && !searching}
     <div class="tab-edit">
       <input class="input" bind:value={tabTitleEdit} onchange={renameTab} aria-label="Tab name" />
       <button class="icon-btn" onclick={() => moveTab(-1)} disabled={tabs[0]?.id === activeTabId} aria-label="Move tab left">&#9664;</button>
@@ -428,14 +462,19 @@
         <p class="subtle small">Press + Add or + Folder, or drop files or folders here. Each folder becomes a tab.</p>
       </div>
     {:else}
+      {#if searching}
+        <p class="tiny subtle results">
+          {results.length ? `${results.length} match${results.length === 1 ? '' : 'es'} in all tabs · Enter plays the first · Esc clears` : 'No sounds match'}
+        </p>
+      {/if}
       <div class="grid" class:editing={editMode}>
-        {#each tabPads as p, i (p.id)}
+        {#each shown as p, i (p.id)}
           {@const play = playing.get(p.id)}
           <div
             class="pad-wrap"
             class:dragging={dragId === p.id}
             class:dropbefore={dropBefore === p.id && dragId !== p.id}
-            draggable={editMode}
+            draggable={editMode && !searching}
             ondragstart={(e) => onPadDragStart(e, p)}
             ondragover={(e) => onPadDragOver(e, p.id)}
             ondrop={(e) => onPadDrop(e, p.id)}
@@ -456,13 +495,14 @@
             >
               <span class="pad-label">{p.label}</span>
               <span class="pad-meta">
+                {#if searching && p.tabId !== activeTabId}<span class="pad-tab">{tabTitle(p.tabId)} · </span>{/if}
                 {#if play}{fmtMs(elapsedMs(p.id))} / {fmtMs(p.durationMs)}{:else}{fmtMs(p.durationMs)}{/if}
               </span>
               {#if play}
                 {#key play.instance}<span class="bar" style:width="{progress(p.id) * 100}%"></span>{/key}
               {/if}
             </button>
-            {#if editMode}
+            {#if editMode && !searching}
               <div class="pad-move">
                 <button class="icon-btn" onclick={() => movePad(i, -1)} disabled={i === 0} aria-label="Move {p.label} earlier">&#9664;</button>
                 <button class="icon-btn" onclick={() => movePad(i, 1)} disabled={i === tabPads.length - 1} aria-label="Move {p.label} later">&#9654;</button>
@@ -470,7 +510,7 @@
             {/if}
           </div>
         {/each}
-        {#if editMode}
+        {#if editMode && !searching}
           <button
             class="pad add-pad"
             class:dropbefore={dropBefore === -1}
@@ -557,6 +597,11 @@
   }
   .add-pad .plus { font-size: 22px; color: var(--accent); }
   .hint { margin: 10px 0 0; }
+  .search { flex-shrink: 0; }
+  .search .input { width: 100%; }
+  .tabstrip.dim { opacity: 0.55; }
+  .results { margin: 0 0 8px; }
+  .pad-tab { font-weight: 700; }
   .empty { padding: 24px 10px; text-align: center; }
   .empty p { margin: 4px 0; }
 </style>
