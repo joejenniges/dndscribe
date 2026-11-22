@@ -8,7 +8,11 @@
   import type { DjState, DjTrackInfo } from '$lib/types';
   import { fmtMs } from './format';
 
-  let { st, live }: { st: DjState | null; live: boolean } = $props();
+  let {
+    st,
+    live,
+    collapsed = $bindable(false),
+  }: { st: DjState | null; live: boolean; collapsed?: boolean } = $props();
 
   let tab = $state<'queue' | 'history'>(local.get('dj.queueTab') === 'history' ? 'history' : 'queue');
   function setTab(t: 'queue' | 'history') {
@@ -49,8 +53,12 @@
   const sub = (t: DjTrackInfo) => [t.artist, t.durationMs ? fmtMs(t.durationMs) : ''].filter(Boolean).join(' · ');
 </script>
 
-<section class="qp card" class:stale={!live} aria-label="Queue and history">
+<section class="qp card" class:stale={!live} class:collapsed aria-label="Queue and history">
   <header>
+    <button class="icon-btn fold" onclick={() => (collapsed = !collapsed)} aria-expanded={!collapsed}
+      aria-label={collapsed ? 'Show the queue' : 'Hide the queue'} title={collapsed ? 'Show the queue' : 'Hide the queue'}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+    </button>
     <div class="tabs" role="tablist">
       <button role="tab" class:active={tab === 'queue'} aria-selected={tab === 'queue'} onclick={() => setTab('queue')}>
         Queue <span class="count">{st?.queueTotal ?? 0}</span>
@@ -77,6 +85,7 @@
     {/if}
   </header>
 
+  {#if !collapsed}
   <div class="list">
     {#if tab === 'queue'}
       {#if queue.length === 0}
@@ -137,9 +146,14 @@
   {#if !inVoice && tab === 'queue' && queue.length > 0}
     <p class="tiny subtle foot">The bot isn't in a voice channel, so nothing will play until it joins.</p>
   {/if}
+  {/if}
 </section>
 
 <style>
+  .fold { width: 32px; height: 32px; flex-shrink: 0; }
+  .fold svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; transition: transform 0.15s; }
+  .collapsed .fold svg { transform: rotate(-90deg); }
+  .collapsed header { border-bottom: 0; }
   .qp { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
   .stale { opacity: 0.6; }
   header { display: flex; align-items: center; gap: 10px; padding: 6px 10px 6px 6px; border-bottom: 1px solid var(--border-color); flex-wrap: wrap; }

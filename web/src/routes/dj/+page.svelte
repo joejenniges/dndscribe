@@ -102,14 +102,14 @@
       return {};
     }
   })();
-  let leftW = $state<number>(saved.leftW ?? 360);
+  let leftW = $state<number>(saved.leftW ?? 420);
   let rightW = $state<number>(saved.rightW ?? 400);
   let leftOpen = $state<boolean>(saved.leftOpen ?? true);
   let rightOpen = $state<boolean>(saved.rightOpen ?? true);
   let workW = $state(1400);
 
   function savePanes() {
-    local.set(PANES_KEY, JSON.stringify({ leftW, rightW, leftOpen, rightOpen }));
+    local.set(PANES_KEY, JSON.stringify({ leftW, rightW, leftOpen, rightOpen, consoleH, queueCollapsed }));
   }
 
   // Below ~1340px there isn't room for three panes and a usable deck
@@ -165,6 +165,66 @@
     else rightW = Math.max(MIN_RIGHT, Math.min(MAX_RIGHT, eff.r - d));
     savePanes();
   }
+  // ---- Centre column: console height and queue collapse, per device ----
+  // The decks and mixer sit at their natural height (or taller if dragged
+  // taller with the splitter); the queue takes the rest. Collapsed, the queue
+  // is a single bar and the console takes the room. The queue starts
+  // collapsed when it's empty (unless this device chose otherwise), since an
+  // empty list is a lot of wasted height.
+  const MIN_QUEUE = 140;
+  let consoleH = $state<number | null>(saved.consoleH ?? null);
+  let consoleEl: HTMLDivElement | undefined = $state();
+  let queueCollapsed = $state<boolean>(saved.queueCollapsed ?? false);
+  let queueSeeded = saved.queueCollapsed !== undefined;
+  $effect(() => {
+    if (queueSeeded || !st) return;
+    queueSeeded = true;
+    queueCollapsed = (st.queueTotal ?? 0) === 0;
+  });
+  let centerH = $state(800);
+  let wavesH = $state(140);
+  // Tallest the console may get while leaving the queue its minimum.
+  const maxConsole = $derived(Math.max(200, centerH - wavesH - MIN_QUEUE - 36));
+  function setConsole(h: number) {
+    // CSS min-height: min-content keeps it from going under its content.
+    consoleH = Math.max(160, Math.min(maxConsole, Math.round(h)));
+  }
+  let vdrag: { startY: number; start: number } | null = null;
+  function vDown(e: PointerEvent) {
+    if (e.button !== 0) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    vdrag = { startY: e.clientY, start: consoleEl?.offsetHeight ?? 300 };
+  }
+  function vMove(e: PointerEvent) {
+    if (!vdrag) return;
+    setConsole(vdrag.start + (e.clientY - vdrag.startY));
+  }
+  function vUp() {
+    if (!vdrag) return;
+    vdrag = null;
+    savePanes();
+  }
+  function vKey(e: KeyboardEvent) {
+    const step = e.shiftKey ? 80 : 20;
+    let d = 0;
+    if (e.key === 'ArrowUp') d = -step;
+    else if (e.key === 'ArrowDown') d = step;
+    else if (e.key === 'Home') {
+      consoleH = null; // back to natural height
+      e.preventDefault();
+      savePanes();
+      return;
+    } else return;
+    e.preventDefault();
+    e.stopPropagation();
+    setConsole((consoleEl?.offsetHeight ?? 300) + d);
+    savePanes();
+  }
+  $effect(() => {
+    queueCollapsed;
+    savePanes();
+  });
+
   function toggleLeft() {
     leftOpen = !leftOpen;
     savePanes();
@@ -319,17 +379,26 @@
           {/if}
         {/if}
 
-        <section class="center" aria-label="Decks and mixer">
-          <div class="waves card">
-            <DeckWave {st} deck={0} live={live} />
-            <DeckWave {st} deck={1} live={live} />
+        <section class="center" aria-label="Decks and mixer" bind:clientHeight={centerH}>
+          <div class="waves card" bind:clientHeight={wavesH}>
+            <DeckWave {st} deck={0} overviewOnly lane {live} />
+            <DeckWave {st} deck={1} overviewOnly lane {live} />
           </div>
-          <div class="console">
+          <div class="console" bind:this={consoleEl} class:fill={queueCollapsed}
+            style:height={!queueCollapsed && !stacked && consoleH ? `${Math.min(consoleH, maxConsole)}px` : null}>
             <DeckPanel {st} deck={0} {live} />
             <Mixer {st} {live} />
             <DeckPanel {st} deck={1} {live} />
           </div>
-          <QueuePanel {st} {live} />
+          {#if !queueCollapsed && !stacked}
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+            <div class="vgutter" role="separator" aria-orientation="horizontal" aria-label="Resize decks and queue (Home: natural height)"
+              aria-valuemin={160} aria-valuemax={maxConsole} aria-valuenow={consoleH ?? undefined} tabindex="0"
+              onpointerdown={vDown} onpointermove={vMove} onpointerup={vUp} onpointercancel={vUp} onkeydown={vKey}></div>
+          {/if}
+          <div class="qwrap" class:collapsed={queueCollapsed}>
+            <QueuePanel {st} {live} bind:collapsed={queueCollapsed} />
+          </div>
         </section>
 
         {#if !stacked}
@@ -472,10 +541,27 @@
   .pane { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
   .pane.right .scenes-box { flex: 0 1 auto; max-height: 44%; overflow-y: auto; padding: 12px 14px; }
   .pane.right .sb-box { flex: 1; min-height: 240px; padding: 12px 14px; overflow: hidden; }
-  .center { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 12px; container-type: inline-size; }
-  .waves { padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; flex-shrink: 0; }
-  .console { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 0.75fr) minmax(0, 1fr); gap: 12px; flex-shrink: 0; }
-  .center :global(.qp) { flex: 1; min-height: 180px; }
+  /* Scrolls only when the decks, mixer and the queue's minimum don't fit
+     (short windows, or the mixer stacked under the decks). */
+  .center { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 12px; container-type: inline-size; overflow-y: auto; overscroll-behavior: contain; }
+  .waves { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
+  /* Decks and mixer take whatever height the queue leaves; their contents
+     stay centred rather than stretching. */
+  .console {
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 0.8fr) minmax(0, 1fr); gap: 12px;
+    flex: 0 0 auto; min-height: min-content; align-items: stretch;
+  }
+  .console.fill { flex: 1 1 auto; }
+  .console > :global(.deck) { justify-content: center; }
+  .vgutter {
+    flex-shrink: 0; height: 10px; margin: -8px 0; cursor: row-resize; touch-action: none; position: relative; border-radius: 4px;
+  }
+  .vgutter::after { content: ''; position: absolute; left: 50%; top: 50%; width: 48px; height: 4px; transform: translate(-50%, -50%); border-radius: 2px; background: var(--border-strong); }
+  .vgutter:hover::after, .vgutter:focus-visible::after { background: var(--accent); }
+  .vgutter:focus-visible { outline: none; }
+  .qwrap { flex: 1 1 0; display: flex; min-height: 140px; }
+  .qwrap.collapsed { flex: 0 0 auto; min-height: 0; }
+  .qwrap :global(.qp) { flex: 1; }
   @container (max-width: 820px) {
     .console { grid-template-columns: 1fr 1fr; }
     .console > :global(.mixer) { grid-column: 1 / -1; order: 3; }
@@ -501,7 +587,7 @@
   .stacked .pane.right { order: 2; }
   .stacked .pane.right .scenes-box { max-height: none; }
   .stacked .pane.right .sb-box { min-height: 420px; }
-  .stacked .center :global(.qp) { min-height: 300px; }
+  .stacked .qwrap:not(.collapsed) :global(.qp) { min-height: 300px; }
   .show-lib { order: 4; }
   .drawer-scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 20; }
   .drawer { position: absolute; top: 12px; bottom: 12px; left: 12px; width: min(380px, 90vw); z-index: 21; display: flex; box-shadow: var(--shadow); }

@@ -540,7 +540,7 @@ type DeckState struct {
 // Transition describes an automated crossfader move so clients can animate
 // the fader themselves instead of receiving a position every frame.
 type Transition struct {
-	Kind       string  `json:"kind"` // scene, auto, next, track
+	Kind       string  `json:"kind"` // scene, auto, next, track, manual (A/B buttons: fader only)
 	ToDeck     int     `json:"toDeck"`
 	From       float64 `json:"from"`
 	To         float64 `json:"to"`

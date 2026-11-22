@@ -27,6 +27,7 @@
     tall = false,
     live = true,
     bare = false,
+    lane = false,
   }: {
     st: DjState | null;
     deck: 0 | 1;
@@ -35,6 +36,8 @@
     live?: boolean;
     /** No deck badge or time (the containing deck card shows them). */
     bare?: boolean;
+    /** One tall whole-track lane (Studio): the overview only, bigger. */
+    lane?: boolean;
   } = $props();
 
   /** Seconds of audio across the scrolling view. */
@@ -356,7 +359,7 @@
   });
 </script>
 
-<div class="dw deck-{deck}" class:tall bind:this={rootEl}>
+<div class="dw deck-{deck}" class:tall class:lane bind:this={rootEl}>
   <div class="row">
     {#if !bare}<span class="tag" aria-hidden="true">{DECK_NAMES[deck]}</span>{/if}
     <div class="waves">
@@ -401,6 +404,10 @@
   canvas { display: block; width: 100%; }
   .overview { height: 30px; }
   .tall .overview { height: 46px; }
+  .lane .overview { height: 54px; }
+  .lane .overview-wrap { background: var(--surface-sunken); border-radius: var(--radius-sm); }
+  .lane .tag { width: 30px; height: 30px; font-size: 14px; }
+  .lane .time { font-size: 13px; min-width: 96px; }
   .scroll { height: 64px; background: var(--surface-sunken); border-radius: var(--radius-sm); }
   .seekable { touch-action: none; user-select: none; }
   .overview-wrap.seekable { cursor: pointer; }

@@ -474,7 +474,7 @@
   .tab-edit .input { width: 160px; }
   .tab-edit .icon-btn { width: 40px; height: 40px; border: 1px solid var(--border-strong); border-radius: var(--radius); }
   .board { flex: 1; min-height: 0; overflow-y: auto; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
   .big .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
   .pad-wrap { position: relative; }
   .pad-wrap.dragging { opacity: 0.4; }
@@ -483,7 +483,7 @@
   }
   .pad {
     --pad-color: var(--accent);
-    position: relative; overflow: hidden; width: 100%; min-height: 84px; padding: 10px; text-align: left;
+    position: relative; overflow: hidden; width: 100%; min-height: 96px; padding: 10px; text-align: left;
     display: flex; flex-direction: column; justify-content: flex-end; gap: 2px;
     border-radius: var(--radius-lg); border: 1px solid color-mix(in srgb, var(--pad-color) 45%, var(--border-strong));
     background-color: var(--surface);

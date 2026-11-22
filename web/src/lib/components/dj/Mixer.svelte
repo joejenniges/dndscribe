@@ -1,9 +1,14 @@
 <script lang="ts">
-  // Mixer: the crossfader between the decks, master volume, Auto DJ and
-  // Next. During an automated crossfade (scene change, Auto DJ, Next) the
-  // server sends where the fader started, where it's going and for how
-  // long; the fader is animated here from that. Grabbing it cancels the
-  // automation on the server, so it never fights the user.
+  // Mixer: crossfader between the decks, master volume and level, Auto DJ
+  // and Next.
+  //
+  // Crossfades are manual. The A and B buttons glide the fader to that side
+  // over the global fade time (mix.fadeTo); it only moves the fader, never
+  // starts or stops a deck. Scene changes and Auto DJ also move it. During
+  // any such glide the server sends where the fader started, where it's
+  // going and for how long, and the fader is animated here from that;
+  // grabbing the fader cancels the glide on the server, so it never fights
+  // the user.
   import { onMount } from 'svelte';
   import { djCmd } from '$lib/dj/control';
   import { crossfaderNow, transitionLeft, DECK_NAMES } from '$lib/dj/live';
@@ -14,7 +19,7 @@
 
   let { st, live, strip = false }: { st: DjState | null; live: boolean; strip?: boolean } = $props();
 
-  // Animated crossfader position (rAF only while a transition runs).
+  // Animated crossfader position (rAF only does work while a glide runs).
   let xf = $state(0);
   let left = $state(0);
   onMount(() => {
@@ -34,7 +39,7 @@
   const tr = $derived(st?.transition ?? null);
   const trLabel = $derived.by(() => {
     if (!tr) return '';
-    const what = { scene: 'Scene change', auto: 'Auto DJ', next: 'Next', track: 'Crossfade' }[tr.kind] ?? 'Crossfade';
+    const what = { scene: 'Scene change', auto: 'Auto DJ', next: 'Next', track: 'Crossfade', manual: 'Fading' }[tr.kind] ?? 'Crossfade';
     return `${what} to ${DECK_NAMES[tr.toDeck]}${left > 0 ? ` · ${left}s` : ''}`;
   });
 
@@ -50,28 +55,44 @@
     }
   }
   const pct = (v: number) => `${Math.round(v * 100)}%`;
-  const xfLabel = (v: number) => (v < 0.02 ? 'A' : v > 0.98 ? 'B' : v > 0.48 && v < 0.52 ? 'Centre' : `${Math.round((1 - v) * 100)}/${Math.round(v * 100)}`);
+  const xfLabel = (v: number) =>
+    v < 0.005 ? 'Full A' : v > 0.995 ? 'Full B' : Math.abs(v - 0.5) < 0.01 ? 'Centre' : `A ${Math.round((1 - v) * 100)} · ${Math.round(v * 100)} B`;
+  const gliding = (i: number) => tr?.toDeck === i;
 </script>
 
+{#snippet side(i: 0 | 1)}
+  <button class="side side-{i}" class:at={(i === 0 && xf < 0.005) || (i === 1 && xf > 0.995)} class:gliding={gliding(i)}
+    onclick={() => run('mix.fadeTo', { deck: i })} disabled={!live}
+    aria-label="Fade the crossfader to deck {DECK_NAMES[i]}" title="Fade to deck {DECK_NAMES[i]} (X fades to the selected deck)">
+    {DECK_NAMES[i]}
+  </button>
+{/snippet}
+
 <section class="mixer card" class:strip class:stale={!live} aria-label="Mixer">
-  <div class="xf" class:auto={!!tr}>
-    <div class="xf-head">
-      <span class="tiny subtle">Crossfader</span>
-      <span class="tiny" class:moving={!!tr}>{trLabel || xfLabel(xf)}</span>
-    </div>
+  {#if !strip}
+    <header>
+      <h3>Mixer</h3>
+      {#if tr}<span class="glide">{trLabel}</span>{/if}
+    </header>
+  {/if}
+
+  <div class="xf">
     <div class="xf-row">
-      <span class="end a" aria-hidden="true">A</span>
+      {@render side(0)}
       <Fader value={xf} cmd="mix.crossfader" args={(v) => ({ value: v })} label="Crossfader, A to B"
-        disabled={!live} showValue={false} big color="var(--text-2)" format={xfLabel} />
-      <span class="end b" aria-hidden="true">B</span>
+        disabled={!live} showValue={false} crossfader big={strip} format={xfLabel} ticks={11} />
+      {@render side(1)}
+    </div>
+    <div class="xf-read" aria-hidden="true">
+      {#if strip && tr}<span class="glide">{trLabel}</span>{:else}{xfLabel(xf)}{/if}
     </div>
   </div>
 
   <div class="master">
-    <span class="tiny subtle">Master</span>
-    <div class="master-row">
+    <span class="lbl">Master</span>
+    <div class="master-ctl">
       <Fader value={st?.volume ?? 0.5} cmd="mix.master" args={(v) => ({ value: v })} label="Master volume"
-        disabled={!live} format={pct} />
+        disabled={!live} format={pct} color="var(--accent)" />
       <Meter source="master" vertical={false} label="Master level" />
     </div>
   </div>
@@ -83,7 +104,7 @@
       <span class="dot" aria-hidden="true"></span>Auto DJ
     </button>
     <button class="btn" onclick={() => run('mix.next')} disabled={!live || busy || !st?.connected}
-      title="Crossfade to the next track now">
+      title="Crossfade to the next queued track now (N)">
       Next
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14l9-7zM16 5h2v14h-2z" /></svg>
     </button>
@@ -91,29 +112,51 @@
 </section>
 
 <style>
-  .mixer { padding: 12px 14px; display: flex; flex-direction: column; gap: 14px; min-width: 0; justify-content: center; }
+  .mixer {
+    padding: 12px 14px; display: flex; flex-direction: column; gap: 14px; min-width: 0; justify-content: space-between;
+    background: linear-gradient(180deg, var(--surface-raised), var(--surface));
+  }
   .stale { opacity: 0.6; }
-  .xf-head { display: flex; justify-content: space-between; gap: 8px; }
-  .xf-head .moving { color: var(--warning); font-weight: 600; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 22px; }
+  h3 { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-2); }
+  .glide { font-size: 12px; font-weight: 700; color: var(--warning); white-space: nowrap; }
+
+  .xf { display: flex; flex-direction: column; gap: 4px; }
   .xf-row { display: flex; align-items: center; gap: 8px; }
   .xf-row :global(.fader) { flex: 1; }
-  .end { width: 24px; height: 24px; border-radius: 6px; display: grid; place-items: center; font-weight: 800; font-size: 12px; color: #111; flex-shrink: 0; }
-  .end.a { background: var(--deck-a); }
-  .end.b { background: var(--deck-b); }
+  .xf-read { text-align: center; font-size: 13px; font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; min-height: 18px; }
+
+  .side {
+    --c: var(--deck-a);
+    flex-shrink: 0; width: 40px; height: 40px; border-radius: 8px; padding: 0;
+    font-weight: 800; font-size: 15px; color: var(--c);
+    background: color-mix(in srgb, var(--c) 12%, var(--surface-raised));
+    border: 1px solid color-mix(in srgb, var(--c) 45%, var(--border-strong));
+    transition: background 0.15s, color 0.15s;
+  }
+  .side-1 { --c: var(--deck-b); }
+  .side:hover:not(:disabled) { background: color-mix(in srgb, var(--c) 24%, var(--surface-raised)); }
+  .side.at { background: var(--c); color: #111; border-color: var(--c); }
+  .side.gliding { animation: glow 1s ease-in-out infinite; }
+  @keyframes glow { 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 45%, transparent); } }
+  @media (prefers-reduced-motion: reduce) { .side.gliding { animation: none; box-shadow: 0 0 0 2px var(--c); } }
+  .side:disabled { opacity: 0.5; cursor: not-allowed; }
+
   .master { display: flex; flex-direction: column; gap: 4px; }
-  .master-row { display: flex; flex-direction: column; gap: 6px; }
+  .lbl { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
+  .master-ctl { display: flex; flex-direction: column; gap: 2px; }
+
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
   .actions .btn { flex: 1; min-height: 44px; justify-content: center; gap: 8px; display: inline-flex; align-items: center; }
   .actions svg { width: 16px; height: 16px; fill: currentColor; }
   .toggle .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); }
   .toggle.on { border-color: var(--success); color: var(--success); }
-  .toggle.on .dot { background: var(--success); }
+  .toggle.on .dot { background: var(--success); box-shadow: 0 0 6px var(--success); }
 
-  /* One row for Performance mode: master | crossfader | buttons. */
-  .strip { flex-direction: row; align-items: center; gap: 18px; flex-wrap: wrap; padding: 6px 14px; }
-  /* The status bar has the master fader; don't spend tablet height on two. */
-  .strip .master { display: none; }
-  .strip .xf { flex: 2 1 320px; }
+  /* Performance: one row. Crossfader | master | buttons. */
+  .strip { flex-direction: row; align-items: center; gap: 18px; flex-wrap: wrap; padding: 8px 14px; }
+  .strip .xf { flex: 3 1 360px; }
+  .strip .side { width: 52px; height: 52px; font-size: 18px; }
   .strip .master { flex: 1 1 200px; }
   .strip .actions { flex: 0 1 auto; }
   .strip .actions .btn { min-height: 52px; min-width: 110px; }

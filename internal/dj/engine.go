@@ -310,6 +310,13 @@ func (e *Engine) musicPlayingLocked() bool {
 func (e *Engine) mixFrameLocked() ([]int16, bool) {
 	musicOn := e.decks[0].sounding() || e.decks[1].sounding()
 	if !musicOn && len(e.sfx) == 0 {
+		// Nothing is mixed while silent, so a crossfader glide would hang
+		// here half-done (both decks paused mid-fade). Nobody hears the
+		// fader move in silence: finish it.
+		if a := e.auto; a != nil {
+			a.pos = a.frames
+			e.finishAutoLocked()
+		}
 		return nil, false
 	}
 

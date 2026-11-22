@@ -126,6 +126,27 @@
     }
   }
 
+  // Row menu: the rarely used actions (play now, queue, delete), so each row
+  // shows only the deck buttons. One menu open at a time.
+  let menuFor = $state<number | null>(null);
+  function toggleMenu(id: number) {
+    menuFor = menuFor === id ? null : id;
+    if (armed?.startsWith('t:')) armed = null;
+  }
+  function closeMenus(e: PointerEvent) {
+    if (menuFor !== null && !(e.target as Element).closest?.('.row-menu, .more')) menuFor = null;
+  }
+  function menuKey(e: KeyboardEvent) {
+    if (e.key === 'Escape' && menuFor !== null) {
+      e.stopPropagation();
+      menuFor = null;
+    }
+  }
+  async function menuRun(key: string, cmd: string, args: Record<string, unknown>) {
+    menuFor = null;
+    await run(key, cmd, args);
+  }
+
   async function rescan() {
     scanning = true;
     try {
@@ -211,34 +232,43 @@
   {:else}
     <ul class="tracks" aria-label="Tracks">
       {#each visibleTracks as t (t.id)}
-        <li class:missing={t.missing} class:current={deckTrackIds.has(t.id)}>
+        <li class:missing={t.missing} class:current={deckTrackIds.has(t.id)} class:menu-open={menuFor === t.id}>
           <span class="row-main static">
-            <span class="row-title">{trackTitle(t)}</span>
-            <span class="tiny subtle">{[t.artist, shownPath(t), t.durationMs ? fmtMs(t.durationMs) : ''].filter(Boolean).join(' · ')}</span>
+            <span class="row-title" title={trackTitle(t)}>{trackTitle(t)}</span>
+            <span class="tiny subtle">{[t.artist, shownPath(t)].filter(Boolean).join(' · ') || ' '}</span>
           </span>
+          <span class="dur">{t.durationMs ? fmtMs(t.durationMs) : ''}</span>
           <span class="acts">
             <button class="chip-btn a" onclick={() => run(`a:${t.id}`, 'deck.load', { deck: 0, trackId: t.id })}
-              disabled={!live || t.missing || pending !== null} aria-label="Load {trackTitle(t)} on deck A">A</button>
+              disabled={!live || t.missing || pending !== null} aria-label="Load {trackTitle(t)} on deck A" title="Load on deck A">A</button>
             <button class="chip-btn b" onclick={() => run(`b:${t.id}`, 'deck.load', { deck: 1, trackId: t.id })}
-              disabled={!live || t.missing || pending !== null} aria-label="Load {trackTitle(t)} on deck B">B</button>
-            {#if !compact}
-              <button class="icon-btn" onclick={() => run(`q:${t.id}`, 'queue.add', { trackId: t.id })}
-                disabled={!live || t.missing || pending !== null} aria-label="Add {trackTitle(t)} to the queue" title="Add to queue">+</button>
-            {/if}
-            <button class="icon-btn play" onclick={() => run(`p:${t.id}`, 'track.play', { trackId: t.id })}
-              disabled={!live || !inVoice || t.missing || pending !== null} aria-label="Play {trackTitle(t)} now"
-              title="Crossfade to this track now">&#9654;</button>
-            {#if !compact}
-              <button class="icon-btn del" class:armed={armed === `t:${t.id}`} onclick={() => deleteTrack(t)}
-                aria-label={armed === `t:${t.id}` ? `Confirm delete ${trackTitle(t)}` : `Delete ${trackTitle(t)}`}
-                title={armed === `t:${t.id}` ? 'Tap again to delete the file' : 'Delete'}>{armed === `t:${t.id}` ? 'Delete?' : '✕'}</button>
-            {/if}
+              disabled={!live || t.missing || pending !== null} aria-label="Load {trackTitle(t)} on deck B" title="Load on deck B">B</button>
+            <button class="icon-btn more" onclick={() => toggleMenu(t.id)} aria-haspopup="menu" aria-expanded={menuFor === t.id}
+              aria-label="More for {trackTitle(t)}" title="More">&#8943;</button>
           </span>
+          {#if menuFor === t.id}
+            <div class="row-menu" role="menu" aria-label="{trackTitle(t)} actions">
+              <button role="menuitem" onclick={() => menuRun(`p:${t.id}`, 'track.play', { trackId: t.id })}
+                disabled={!live || !inVoice || t.missing}>Play now (crossfade)</button>
+              <button role="menuitem" onclick={() => menuRun(`n:${t.id}`, 'queue.add', { trackId: t.id, next: true })}
+                disabled={!live || t.missing}>Play next</button>
+              <button role="menuitem" onclick={() => menuRun(`q:${t.id}`, 'queue.add', { trackId: t.id })}
+                disabled={!live || t.missing}>Add to queue</button>
+              {#if !compact}
+                <hr />
+                <button role="menuitem" class="danger" onclick={() => deleteTrack(t)}>
+                  {armed === `t:${t.id}` ? 'Tap again to delete the file' : 'Delete file…'}
+                </button>
+              {/if}
+            </div>
+          {/if}
         </li>
       {/each}
     </ul>
   {/if}
 </section>
+
+<svelte:window onpointerdown={closeMenus} onkeydown={menuKey} />
 
 <style>
   .lib { display: flex; flex-direction: column; min-height: 0; height: 100%; overflow: hidden; }
@@ -257,7 +287,20 @@
   .twist { width: 24px; height: 36px; flex-shrink: 0; background: none; border: 0; color: var(--text-3); font-size: 12px; padding: 0; }
   .tracks-head { padding: 8px 14px 4px; }
   .tracks { flex: 1; min-height: 0; overflow-y: auto; padding: 0 6px 6px; }
-  .tracks li { display: flex; align-items: center; gap: 6px; padding: 2px 6px; min-height: 52px; border-bottom: 1px solid var(--border-color); }
+  .tracks li { position: relative; display: flex; align-items: center; gap: 8px; padding: 2px 4px 2px 8px; min-height: 52px; border-bottom: 1px solid var(--border-color); border-radius: var(--radius-sm); }
+  .tracks li:hover, .tracks li.menu-open { background: var(--surface-raised); }
+  .dur { flex-shrink: 0; font-size: 13px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .more { font-size: 18px; color: var(--text-2); }
+  .row-menu {
+    position: absolute; right: 6px; top: calc(100% - 4px); z-index: 30; min-width: 200px;
+    display: flex; flex-direction: column; padding: 6px; border-radius: var(--radius);
+    background: var(--surface-raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow);
+  }
+  .row-menu button { text-align: left; background: none; border: 0; color: var(--text); padding: 10px 12px; border-radius: var(--radius-sm); font-size: 14px; min-height: 40px; }
+  .row-menu button:hover:not(:disabled) { background: var(--surface-hover); }
+  .row-menu button:disabled { color: var(--text-3); }
+  .row-menu .danger { color: var(--danger); }
+  .row-menu hr { border: 0; border-top: 1px solid var(--border-color); margin: 4px 0; }
   .tracks li:last-child { border-bottom: 0; }
   .tracks li.current .row-title { color: var(--accent-text, var(--accent)); }
   .tracks li.missing .row-title { color: var(--text-3); text-decoration: line-through; }
@@ -268,14 +311,12 @@
   .acts { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
   .acts .icon-btn, .play { width: 32px; height: 36px; flex-shrink: 0; }
   .chip-btn {
-    width: 30px; height: 32px; border-radius: 7px; font-weight: 800; font-size: 12px;
+    width: 34px; height: 34px; border-radius: 7px; font-weight: 800; font-size: 12px;
     background: var(--surface-raised); border: 1px solid var(--border-strong);
   }
   .chip-btn.a { border-color: color-mix(in srgb, var(--deck-a) 60%, var(--border-strong)); color: var(--deck-a); }
   .chip-btn.b { border-color: color-mix(in srgb, var(--deck-b) 60%, var(--border-strong)); color: var(--deck-b); }
   .chip-btn:disabled { opacity: 0.4; }
-  .del { color: var(--text-3); font-size: 13px; }
-  .del.armed { width: auto; padding: 0 8px; color: var(--danger); font-weight: 600; }
   .empty { padding: 12px 14px; margin: 0; }
   .compact .chip-btn, .compact .acts .icon-btn, .compact .play { width: 44px; height: 44px; }
   .compact .tracks li { min-height: 56px; }

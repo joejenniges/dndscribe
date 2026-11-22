@@ -34,6 +34,31 @@ export function transitionLeft(st: DjState | null, now = Date.now()): number {
 
 export const DECK_NAMES = ['A', 'B'] as const;
 
+/** Each deck's level through the crossfader (the server's equal-power law). */
+export function xfWeights(x: number): [number, number] {
+  return [Math.cos((x * Math.PI) / 2), Math.sin((x * Math.PI) / 2)];
+}
+
+/** Whether deck i is actually being heard: playing, in voice, and not
+ *  faded out by the crossfader. The server's `onAir` ignores the fader (a
+ *  deck playing on the far side still counts), so the "On air" badge uses
+ *  this instead. */
+export function deckHeard(st: DjState | null, i: number, now = Date.now()): boolean {
+  const d = st?.decks?.[i];
+  if (!st?.connected || !d?.track || !d.playing || (d.gain ?? 1) <= 0.01) return false;
+  return xfWeights(crossfaderNow(st, now))[i] > 0.05;
+}
+
+/** The deck the audience mainly hears, or -1. */
+export function heardDeck(st: DjState | null, now = Date.now()): number {
+  const h = [deckHeard(st, 0, now), deckHeard(st, 1, now)];
+  if (h[0] && h[1]) {
+    const w = xfWeights(crossfaderNow(st, now));
+    return w[0] * (st!.decks[0].gain ?? 1) >= w[1] * (st!.decks[1].gain ?? 1) ? 0 : 1;
+  }
+  return h[0] ? 0 : h[1] ? 1 : -1;
+}
+
 /** Device kind for presence and the default layout. Touch-first screens
  *  (coarse pointer) are tablets or phones; everything else is a desktop. */
 export function deviceKind(): 'desktop' | 'tablet' | 'phone' {

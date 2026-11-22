@@ -176,7 +176,7 @@ export interface DjDeck {
 
 /** An automated crossfader move; clients animate it locally. */
 export interface DjTransition {
-  kind: 'scene' | 'auto' | 'next' | 'track';
+  kind: 'scene' | 'auto' | 'next' | 'track' | 'manual';
   toDeck: 0 | 1;
   from: number;
   to: number;

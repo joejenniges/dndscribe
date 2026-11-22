@@ -2,36 +2,58 @@ package dj
 
 import "testing"
 
-// Crossfading to a cued deck starts it, moves the fader over the global fade
-// and unloads the deck it left.
-func TestFadeToCuedDeck(t *testing.T) {
+// FadeToDeck only glides the fader: both decks keep playing and stay loaded.
+func TestFadeToDeckMovesOnlyTheFader(t *testing.T) {
 	e, out, _ := newTestEngine() // global fade 1s = 50 frames
 	e.SetAutoDJ(false)
-	a, sa := constItem("a", 1000, 1000, 0)
-	if err := e.startNow(a, 0, "scene"); err != nil {
-		t.Fatal(err)
-	}
-	frames(e, out, 60)
+	a, _ := constItem("a", 1000, 1000, 0)
 	b, _ := constItem("b", 1000, 1000, 0)
-	if err := e.openOnDeck(1, &b); err != nil {
-		t.Fatal(err)
-	}
-	if e.State().Decks[1].Playing {
-		t.Fatal("a cued deck should not be playing")
-	}
+	_ = e.openOnDeck(0, &a)
+	_ = e.openOnDeck(1, &b)
+	_ = e.PlayDeck(0)
+	_ = e.PlayDeck(1)
 	if err := e.FadeToDeck(1); err != nil {
 		t.Fatal(err)
 	}
+	if tr := e.State().Transition; tr == nil || tr.Kind != "manual" || tr.DurationMs != 1000 {
+		t.Fatalf("transition = %+v", tr)
+	}
+	frames(e, out, 25)
+	if x := e.State().Crossfader; x < 0.3 || x > 0.7 {
+		t.Fatalf("halfway: fader %.2f", x)
+	}
+	frames(e, out, 40)
 	st := e.State()
-	if tr := st.Transition; tr == nil || tr.ToDeck != 1 || tr.DurationMs != 1000 || !st.Decks[1].Playing {
-		t.Fatalf("transition %+v, deck B playing %v", st.Transition, st.Decks[1].Playing)
+	if st.Crossfader != 1 || st.Transition != nil {
+		t.Fatalf("after: fader %.2f transition %+v", st.Crossfader, st.Transition)
 	}
-	frames(e, out, 60)
-	st = e.State()
-	if st.Crossfader != 1 || st.Decks[0].Track != nil || !sa.closed {
-		t.Fatalf("after fade: fader %.2f, deck A %+v", st.Crossfader, st.Decks[0].Track)
+	if !st.Decks[0].Playing || st.Decks[0].Track == nil || !st.Decks[1].Playing {
+		t.Fatal("a manual fade must not stop or unload a deck")
 	}
-	if err := e.FadeToDeck(0); err == nil {
-		t.Fatal("fading to an empty deck should fail")
+}
+
+// With nothing playing the fader just moves (a glide would never advance),
+// and a glide never stays "in progress" once everything has stopped.
+func TestFadeToDeckWhenSilent(t *testing.T) {
+	e, out, _ := newTestEngine()
+	e.SetAutoDJ(false)
+	if err := e.FadeToDeck(1); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.State(); st.Crossfader != 1 || st.Transition != nil {
+		t.Fatalf("idle: fader %.2f transition %+v", st.Crossfader, st.Transition)
+	}
+	a, _ := constItem("a", 1000, 1000, 0)
+	_ = e.openOnDeck(0, &a)
+	_ = e.PlayDeck(0)
+	frames(e, out, 5)
+	_ = e.FadeToDeck(0)
+	frames(e, out, 10)
+	_ = e.PauseDeck(0)
+	frames(e, out, 30) // ramp down, then silence
+	// (Pausing cancels the glide where it is; either way nothing is left
+	// showing a fade that will never finish.)
+	if st := e.State(); st.Transition != nil {
+		t.Fatalf("after stop: transition still running %+v", st.Transition)
 	}
 }

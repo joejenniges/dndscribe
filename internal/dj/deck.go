@@ -133,7 +133,11 @@ func (e *Engine) mixDeck(d *deck, acc []float64) bool {
 
 // autoFade is an automated crossfader move toward deck `to`.
 type autoFade struct {
-	kind      string // "scene", "auto", "next", "track"
+	kind      string // "scene", "auto", "next", "track", "manual"
+	// retire: unload the deck faded away from when the move completes.
+	// True for transitions between tracks; false for a manual fader move
+	// (the A/B buttons), which only moves the fader.
+	retire bool
 	to        int
 	from      float64
 	target    float64
@@ -187,7 +191,7 @@ func (e *Engine) startTransitionLocked(to int, frames int, kind string) {
 		e.notify()
 		return
 	}
-	e.auto = &autoFade{kind: kind, to: to, from: e.xTarget, target: target, frames: frames, startedAt: time.Now()}
+	e.auto = &autoFade{kind: kind, to: to, from: e.xTarget, target: target, frames: frames, startedAt: time.Now(), retire: true}
 	e.notify()
 }
 
@@ -200,7 +204,9 @@ func (e *Engine) finishAutoLocked() {
 	}
 	e.auto = nil
 	e.xTarget, e.xfade = a.target, a.target
-	e.retireOtherLocked(a.to)
+	if a.retire {
+		e.retireOtherLocked(a.to)
+	}
 	e.notify()
 }
 
@@ -482,14 +488,9 @@ func (e *Engine) PlayDeck(i int) error {
 	d.runStep = 0
 	d.ejectWhenSilent = false
 	e.pausedByPauseAll = nil
-	// With nothing else playing, Play means "play this": put the crossfader
-	// on this deck, or it would play silently with the fader on the other
-	// side. With the other deck playing the fader stays put, so a track can
-	// be started under the current one and brought in with a crossfade.
-	if !e.decks[1-i].audible() && e.auto == nil {
-		e.xTarget = deckSide(i)
-		e.xfade = e.xTarget
-	}
+	// Play never touches the crossfader: crossfades are the user's call
+	// (fader, the A/B buttons, X). A deck started on the far side of the
+	// fader plays silently until faded in, as on a hardware mixer.
 	e.mu.Unlock()
 	e.notify()
 	return nil
@@ -548,31 +549,32 @@ func (e *Engine) SetDeckGain(i int, g float64) error {
 
 // SetCrossfader moves the crossfader by hand. It cancels any automated
 // transition at once, so the automation never fights the user.
-// FadeToDeck crossfades to deck i over the global fade time, starting it if
-// it's cued, and unloads the other deck when the fade completes (the same
-// move as a scene change, but onto a track the user put on the deck). If the
-// fader is already on that side it just starts the deck.
+// FadeToDeck glides the crossfader to deck i's side over the global fade
+// time. It only moves the fader: it doesn't start, stop or unload either deck
+// (the A/B buttons beside the crossfader, and the X key). Grabbing the fader
+// cancels it like any automated move.
 func (e *Engine) FadeToDeck(i int) error {
 	if err := checkDeck(i); err != nil {
 		return err
 	}
-	if !e.isConnected() {
-		return ErrNotConnected
-	}
 	e.mu.Lock()
-	d := e.decks[i]
-	switch {
-	case d.loading:
-		e.mu.Unlock()
-		return fmt.Errorf("deck %s is still loading", deckName(i))
-	case d.v == nil || d.v.done:
-		e.mu.Unlock()
-		return fmt.Errorf("nothing to play on deck %s", deckName(i))
+	defer e.mu.Unlock()
+	target := deckSide(i)
+	frames := secondsToFrames(e.fadeSeconds)
+	// The mixer only advances a glide while it's mixing: with no voice
+	// connection, or nothing playing, it would sit still. Nothing is heard
+	// then anyway, so just set it.
+	if !e.connected || frames <= 0 || !(e.decks[0].sounding() || e.decks[1].sounding()) {
+		e.auto = nil
+		e.xTarget, e.xfade = target, target
+		e.notify()
+		return nil
 	}
-	d.ejectWhenSilent = false
-	e.pausedByPauseAll = nil
-	e.startTransitionLocked(i, secondsToFrames(e.fadeSeconds), "track")
-	e.mu.Unlock()
+	if e.auto == nil && e.xTarget == target {
+		return nil
+	}
+	e.auto = &autoFade{kind: "manual", to: i, from: e.xTarget, target: target, frames: frames, startedAt: time.Now()}
+	e.notify()
 	return nil
 }
 

@@ -23,7 +23,7 @@ hotkeysOn.subscribe((on) => local.set('dj.hotkeys', on ? 'on' : 'off'));
 export const HOTKEYS: { keys: string; what: string }[] = [
   { keys: 'Tab', what: 'Select the other deck' },
   { keys: 'Space', what: 'Play / pause the selected deck' },
-  { keys: 'X', what: 'Crossfade to the selected deck (global fade time)' },
+  { keys: 'X', what: 'Fade the crossfader to the selected deck (global fade time)' },
   { keys: 'R', what: 'Selected deck back to the start' },
   { keys: 'N', what: 'Next track (crossfade from the queue)' },
   { keys: 'A', what: 'Auto DJ on / off' },
@@ -67,6 +67,8 @@ export function installHotkeys(t: HotkeyTargets): () => void {
   function onKey(e: KeyboardEvent) {
     if (!get(hotkeysOn) || e.ctrlKey || e.metaKey || e.altKey) return;
     if (document.querySelector('dialog[open]')) return;
+    // An open popup menu gets Escape (to close it) and its own keys.
+    if (document.querySelector('[role="menu"]') && e.key === 'Escape') return;
     const el = document.activeElement;
     if (typing(el)) return;
 

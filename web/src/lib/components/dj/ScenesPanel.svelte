@@ -161,14 +161,14 @@
   .scenes-panel { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
   header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .tools { display: flex; gap: 6px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
   .strip .grid { display: flex; overflow-x: auto; gap: 10px; padding-bottom: 4px; scroll-snap-type: x proximity; }
   .strip .scene-wrap { flex: 0 0 200px; scroll-snap-align: start; }
   .scene-wrap { position: relative; }
   .scene {
     --scene-color: var(--accent);
     position: relative; overflow: hidden;
-    width: 100%; min-height: 104px; padding: 14px 14px 12px; border-radius: var(--radius-lg); text-align: left;
+    width: 100%; min-height: 116px; padding: 14px 14px 12px; border-radius: var(--radius-lg); text-align: left;
     display: flex; flex-direction: column; justify-content: space-between; gap: 10px;
     background-color: var(--surface);
     background-image: linear-gradient(135deg, color-mix(in srgb, var(--scene-color) 34%, transparent), color-mix(in srgb, var(--scene-color) 6%, transparent) 75%);
@@ -203,7 +203,7 @@
   .scene.empty { border: 1px dashed var(--border-strong); color: var(--text-2); min-height: 96px; background-image: none; }
   /* Name pinned to the top, count and flags to the bottom, so every tile
      lines up the same whatever its contents. */
-  .scene-name { font-size: 16px; font-weight: 700; line-height: 1.3; padding-right: 34px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .scene-name { font-size: 17px; font-weight: 700; line-height: 1.3; padding-right: 34px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .scene-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 18px; }
   .scene-meta { font-size: 13px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .scene.active .scene-meta { color: var(--scene-color); font-weight: 600; }
