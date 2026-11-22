@@ -1,0 +1,114 @@
+# DJ Studio: engine and realtime protocol
+
+How the DJ works as built. The design handoff in `dndscribe-redesign/docs/v3/` describes the target UI; where it and this file disagree on backend behaviour, this file is right.
+
+## Audio path
+
+```
+Deck A --gain--\
+                crossfader (equal power) --+
+Deck B --gain--/                           +-- master -- soft limiter -- opus -- Discord
+Soundboard effects -- effects gain --------+
+```
+
+- Everything is mixed in the Go process (`internal/dj`) on a 20ms clock and sent on the bot's one voice connection, the same one used for recording. Browsers never play audio. Music keeps going with every page closed.
+- Effects are mixed after the crossfader, so a crossfade never fades them out.
+- Discord does not send the bot its own audio, so music and effects never reach the per-user transcription pipeline.
+- Nothing plays while the bot isn't in a voice channel. Decks can still be loaded. If the voice connection drops, playing music is held for 10 seconds, then unloaded along with the queue. Decks that were only cued stay loaded.
+
+## Decks, crossfader, queue
+
+| Thing | Behaviour |
+|---|---|
+| Deck A / B | One loaded track each. Play, pause (200ms ramp), seek (restarts ffmpeg at the position with a 40ms crossfade), eject, gain 0..1. A deck whose track ended starts it again on Play. |
+| Crossfader | 0 = A, 1 = B, equal-power (both at -3dB in the centre). Server state. Moving it by hand cancels any automated move immediately. |
+| On air | The playing deck, or with both playing, the one the crossfader favours. |
+| Queue | Shared "up next" list. A scene or folder replaces it. Add (next or last), move, remove, clear. Shuffle reorders what's left; turning it off restores the original order. Loop refills it when it runs out (a reshuffle never repeats the last track first). |
+| History | The last 30 tracks that played for more than a second. |
+| Auto DJ | On by default. Preloads the next queue track onto the idle deck, then crossfades to it starting `fade` seconds before the on-air track ends (at most a third of either track's length). If a track ends before that (unknown duration, or a preload that wasn't ready), it cuts to the other deck in the same frame. Off: a deck stops at the end of its track. |
+| Scene | Replaces the queue with the tracks in its folders (sub-folders included), applies its shuffle, loop and volume, puts the first track on the idle deck and moves the crossfader over the scene's fade (or the global one). From silence it starts on the deck the crossfader already points at, with no fader move. Tapping the scene that is already playing does nothing. A newer scene, Next or track command replaces a transition in progress. |
+| Next | Crossfades (1s) to whatever is on the idle deck, else the head of the queue. |
+| Stop all | Fades both decks and all effects over 0.25s, unloads the decks and clears the queue. |
+| Test tone | 440Hz for 2s on the effects bus; never touches the decks. |
+
+Auto DJ preloads are marked `auto` in the state. Starting music from silence drops a stale `auto` preload left on the other deck; a track loaded by hand stays and plays next.
+
+## WebSocket
+
+One socket, at `/` on the web port. JSON text messages.
+
+### Server to client
+
+| type | When | Payload |
+|---|---|---|
+| `init` | On connect | `status`, `members`, `saveRecordings`, `dj` (a full DJ state) |
+| `dj_state` | Any DJ change (at most 25/s), and every 5s while playing | Full state, see below |
+| `dj_meters` | 10/s while anything is audible, then once at zero | `{decks:[a,b], master}`, peak 0..1 since the last report |
+| `dj.ack` | Reply to the sender's `dj.cmd` only | `{id, ok, error?, rev}` |
+| `presence` | A client says hello or leaves | `{clients:[{device, page}]}` |
+| `dj_library` | Tracks, folders, scenes or pads changed (via HTTP) | none; refetch what you show |
+
+The DJ state is a whole snapshot, never a delta. A client that missed messages uses the next one. `rev` increases with every change; after an ack with `rev` R, any snapshot with `rev >= R` includes that command.
+
+Positions are not streamed. Each deck has `positionMs` sampled at `at` (server unix ms); clients extrapolate while `playing`. During an automated fade `transition` gives `{kind, toDeck, from, to, startedAt, durationMs}` and clients animate the fader from it.
+
+```jsonc
+{
+  "rev": 1234, "at": 1795369854960, "connected": true,
+  "decks": [
+    {"track": {"id": 28, "title": "Descent", "artist": "Austin Wintory", "durationMs": 161060, "path": "Cave Music/..."},
+     "playing": true, "ended": false, "positionMs": 42100, "gain": 1, "loading": false, "auto": true},
+    {"track": null, "playing": false, "ended": false, "positionMs": 0, "gain": 1, "loading": false, "auto": false}
+  ],
+  "onAir": 0, "crossfader": 0, "transition": null, "autoDJ": true,
+  "volume": 0.5, "fadeSeconds": 6,
+  "sceneId": 3, "folder": null, "sourceName": "Cave", "loop": true, "shuffle": false,
+  "queue": [{"qid": 17, "id": 31, "title": "...", "artist": "...", "durationMs": 0}], "queueTotal": 28,
+  "history": [{"id": 27, "title": "...", "playedAt": 1795369800000}],
+  "sfx": [{"padId": 4, "instance": 12, "label": "Thunder", "positionMs": 300, "durationMs": 2100}], "sfxGain": 1,
+  "error": ""
+  // plus playing/paused/track/positionMs/upNext/programName for the pre-v3 page
+}
+```
+
+### Client to server
+
+`{"type":"hello","device":"desktop|tablet|phone","page":"dj"}`: presence; send on connect and on page change. Informational only; no device gets more control than another.
+
+`{"type":"dj.cmd","id":"<unique>","cmd":"<name>","args":{...}}`: a live control. Use a new `id` for every user action. Resend the same `id` only for a retry: a repeated id is not run again and gets the original ack. Don't queue commands while disconnected; drop them and let the user act again.
+
+| cmd | args |
+|---|---|
+| `deck.load` | `deck` (0/1), `trackId` |
+| `deck.play` / `deck.pause` / `deck.eject` | `deck` |
+| `deck.seek` | `deck`, `positionMs` |
+| `deck.gain` | `deck`, `value` 0..1 |
+| `mix.crossfader` | `value` 0..1 (cancels automation) |
+| `mix.master` / `mix.sfxGain` | `value` 0..1 |
+| `mix.autoDJ` | `on` |
+| `mix.next` / `mix.stopAll` | none |
+| `scene.play` | `sceneId` |
+| `folder.play` | `folder` (music-dir relative, "" = all), optional `trackId` to start at |
+| `track.play` | `trackId` (crossfade to it now; the queue carries on after) |
+| `tone.play` | optional `seconds` |
+| `queue.add` | `trackIds` (or `trackId`), `next` (true = front) |
+| `queue.move` | `qid`, `to` (index) |
+| `queue.remove` | `qid` |
+| `queue.clear` | none |
+| `queue.shuffle` / `queue.loop` | `on` |
+| `sfx.trigger` | `padId` (restarts that pad from zero if it's playing) |
+| `sfx.stop` | optional `padId` (none = all effects) |
+
+Faders: send at most ~30 per second while dragging and always the final value on release. While a user drags a control, keep showing their pointer position and ignore that control in incoming snapshots until release. Last write wins between devices; there is no locking.
+
+Errors come back in the ack (`ok:false`, `error` is a sentence for a toast), for example `the bot is not in a voice channel`, `deck B is empty`.
+
+## HTTP
+
+Editing and uploads stay on HTTP under `/api/dj/` (tracks, folders, files, scenes, soundboard tabs/pads/images, waveforms, settings). The older transport routes (`/api/dj/play`, `pause`, `resume`, `next`, `seek`, `stop`, `volume`, `tone`) still work and act on the on-air deck.
+
+`GET /api/connect` lists the addresses a tablet can open the app on (Tailscale name and IP, home network); `GET /api/connect/qr?url=` returns a QR PNG for one of them.
+
+## Security
+
+There is no login: the app is meant for a home LAN or a Tailscale tailnet. Don't expose the port to the internet. The WebSocket only accepts pages served from the app itself (same host) or localhost, so another website open in the same browser can't drive the DJ or read transcripts.
