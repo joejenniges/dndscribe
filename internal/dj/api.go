@@ -300,6 +300,25 @@ func NewHandler(engine *Engine, library *Library, sb *Soundboard, waves *Wavefor
 		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 	})
 
+	// Which of these upload targets already exist. Asked once before a
+	// batch so a re-upload of a folder only sends what's new (or, if the
+	// user chooses, overwrites the rest) instead of streaming every file
+	// just to get a 409.
+	m.HandleFunc("POST /api/dj/files/exists", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Paths []string `json:"paths"`
+		}
+		if err := readBody(r, &body); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		if len(body.Paths) > 50000 {
+			writeErr(w, http.StatusBadRequest, "too many paths")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string][]string{"existing": h.library.Existing(body.Paths)})
+	})
+
 	// Upload one file. The body is the raw file; the target path (folders
 	// included) is in ?path=. One request per file keeps uploads streaming
 	// (no multipart buffering), lets the browser show per-file progress and

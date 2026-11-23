@@ -196,6 +196,19 @@ func UpdateSfxPad(ctx context.Context, p SfxPad) (bool, error) {
 	return tag.RowsAffected() > 0, err
 }
 
+// SetSfxPadSound points a pad at a new sound file and returns the previous
+// file key so the caller can delete that file.
+func SetSfxPadSound(ctx context.Context, id int64, key, originalName string, durationMs int64) (old string, err error) {
+	err = pool.QueryRow(ctx, `
+		UPDATE dj_sfx_pads p SET file_key = $2, original_name = $3, duration_ms = $4
+		FROM (SELECT file_key FROM dj_sfx_pads WHERE id = $1) prev
+		WHERE p.id = $1 RETURNING prev.file_key`, id, key, originalName, durationMs).Scan(&old)
+	if err == pgx.ErrNoRows {
+		return "", fmt.Errorf("pad not found")
+	}
+	return old, err
+}
+
 // SetSfxPadImage sets (or clears, with nil) a pad's image and returns the
 // previous image key so the caller can delete that file.
 func SetSfxPadImage(ctx context.Context, id int64, key *string) (old *string, err error) {

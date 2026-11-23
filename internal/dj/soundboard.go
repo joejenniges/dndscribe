@@ -81,19 +81,78 @@ func (s *Soundboard) Warm(ctx context.Context) {
 // The file is decoded before the pad is created: a file ffmpeg can't read
 // is rejected now, not discovered mid-game when the pad is tapped.
 func (s *Soundboard) AddSound(ctx context.Context, tabID int64, name string, body io.Reader) (*db.SfxPad, error) {
+	snd, err := s.storeSound(ctx, name, body)
+	if err != nil {
+		return nil, err
+	}
+	label := strings.TrimSuffix(snd.name, path.Ext(snd.name))
+	label = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(label, "_", " "), "-", " "))
+	if label == "" {
+		label = "Sound"
+	}
+	pad, err := db.CreateSfxPad(ctx, db.SfxPad{
+		TabID: tabID, Label: label, FileKey: snd.key, OriginalName: snd.name,
+		DurationMs: snd.durationMs, Gain: 1,
+	})
+	if err != nil {
+		s.dropSound(snd.key)
+		return nil, err
+	}
+	return pad, nil
+}
+
+// ReplaceSound swaps the audio of an existing pad for an uploaded file and
+// keeps everything the user set on it (label, colour, image, gain,
+// position). This is "overwrite" when a soundboard folder is uploaded again.
+func (s *Soundboard) ReplaceSound(ctx context.Context, padID int64, name string, body io.Reader) (*db.SfxPad, error) {
+	cur, err := db.GetSfxPad(ctx, padID)
+	if err != nil {
+		return nil, err
+	}
+	if cur == nil {
+		return nil, fmt.Errorf("pad not found")
+	}
+	snd, err := s.storeSound(ctx, name, body)
+	if err != nil {
+		return nil, err
+	}
+	oldKey, err := db.SetSfxPadSound(ctx, padID, snd.key, snd.name, snd.durationMs)
+	if err != nil {
+		s.dropSound(snd.key)
+		return nil, err
+	}
+	// Stop the old sound before removing it so a pad mid-play doesn't keep
+	// going with audio that no longer matches the pad.
+	s.engine.StopPad(padID)
+	if oldKey != "" && oldKey != snd.key {
+		s.dropSound(oldKey)
+	}
+	cur.FileKey, cur.OriginalName, cur.DurationMs = snd.key, snd.name, snd.durationMs
+	return cur, nil
+}
+
+type storedSound struct {
+	key        string
+	name       string
+	durationMs int64
+}
+
+// storeSound writes an upload to the sounds folder under a fresh key and
+// checks it decodes and isn't too long. On error nothing is left behind.
+func (s *Soundboard) storeSound(ctx context.Context, name string, body io.Reader) (storedSound, error) {
 	name = path.Base(strings.ReplaceAll(name, "\\", "/"))
 	ext := strings.ToLower(path.Ext(name))
 	if !audioExts[ext] {
-		return nil, fmt.Errorf("%q isn't an audio file this server can play", name)
+		return storedSound{}, fmt.Errorf("%q isn't an audio file this server can play", name)
 	}
 	if err := os.MkdirAll(filepath.Join(s.dir, "sounds"), 0o755); err != nil {
-		return nil, err
+		return storedSound{}, err
 	}
 	key := newKey(ext)
 	full := s.soundPath(key)
 	f, err := os.Create(full)
 	if err != nil {
-		return nil, err
+		return storedSound{}, err
 	}
 	_, err = io.Copy(f, body)
 	if cerr := f.Close(); err == nil {
@@ -101,36 +160,31 @@ func (s *Soundboard) AddSound(ctx context.Context, tabID int64, name string, bod
 	}
 	if err != nil {
 		os.Remove(full)
-		return nil, fmt.Errorf("upload interrupted: %w", err)
+		return storedSound{}, fmt.Errorf("upload interrupted: %w", err)
 	}
 
 	probe := Probe(s.ffmpeg, full)
 	if probe.DurationMs > MaxSfxDuration.Milliseconds() {
 		os.Remove(full)
-		return nil, fmt.Errorf("%q is longer than %d minutes; put long tracks in the music library", name, int(MaxSfxDuration.Minutes()))
+		return storedSound{}, fmt.Errorf("%q is longer than %d minutes; put long tracks in the music library", name, int(MaxSfxDuration.Minutes()))
 	}
 	pcm, err := s.cache.Load(ctx, full)
 	if err != nil {
 		os.Remove(full)
 		// ffmpeg's message is for the log: it's noisy and names server paths.
 		log.Printf("Soundboard: rejected upload %q: %v", name, err)
-		return nil, fmt.Errorf("%q isn't a playable audio file", name)
+		return storedSound{}, fmt.Errorf("%q isn't a playable audio file", name)
 	}
-	label := strings.TrimSuffix(name, path.Ext(name))
-	label = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(label, "_", " "), "-", " "))
-	if label == "" {
-		label = "Sound"
+	return storedSound{key: key, name: name, durationMs: int64(len(pcm)/Channels) * 1000 / SampleRate}, nil
+}
+
+// dropSound forgets and deletes a stored sound file.
+func (s *Soundboard) dropSound(key string) {
+	full := s.soundPath(key)
+	s.cache.Forget(full)
+	if err := os.Remove(full); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("Soundboard: remove %s: %v", full, err)
 	}
-	pad, err := db.CreateSfxPad(ctx, db.SfxPad{
-		TabID: tabID, Label: label, FileKey: key, OriginalName: name,
-		DurationMs: int64(len(pcm)/Channels) * 1000 / SampleRate, Gain: 1,
-	})
-	if err != nil {
-		s.cache.Forget(full)
-		os.Remove(full)
-		return nil, err
-	}
-	return pad, nil
 }
 
 // DeletePad stops the pad, removes it and its files.

@@ -13,6 +13,7 @@
   import { djLibraryVersion } from '$lib/stores/dj';
   import type { DjState, SfxPad, SfxTab } from '$lib/types';
   import PadEditor from './PadEditor.svelte';
+  import ConflictPrompt from './ConflictPrompt.svelte';
   import Fader from './Fader.svelte';
   import { SCENE_COLORS, fmtMs } from './format';
   import { isAudioName, AUDIO_EXTS, fromFileList, type PickedFile } from './library';
@@ -306,6 +307,8 @@
     return parts.length > 1 ? parts[parts.length - 2].trim() : null;
   }
   const keyOf = (f: PickedFile) => folderOf(f)?.toLowerCase() ?? null;
+  let prompt: ReturnType<typeof ConflictPrompt> | undefined = $state();
+  let checking = false;
 
   /** Upload effects (also called by the page on a drop). */
   export async function addFiles(files: PickedFile[]) {
@@ -315,8 +318,38 @@
       addToast('No audio files to add', 'error');
       return;
     }
-    if (uploadTotal > uploadDone) {
+    if (uploadTotal > uploadDone || checking) {
       addToast('Wait for the current upload to finish', 'error');
+      return;
+    }
+    // Already uploaded: a file whose name matches a pad in the tab it would
+    // go into (same file name, case-insensitive). Asked before any tab is
+    // created so Cancel leaves nothing behind. Overwrite swaps the pad's
+    // sound and keeps its label, colour, image and place.
+    const existingTab = (f: PickedFile) =>
+      keyOf(f) === null ? activeTabId : (tabs.find((t) => t.title.trim().toLowerCase() === keyOf(f))?.id ?? null);
+    const dupOf = new Map<PickedFile, SfxPad>();
+    for (const f of audio) {
+      const tid = existingTab(f);
+      if (tid === null) continue;
+      const name = f.file.name.toLowerCase();
+      const pad = pads.find((p) => p.tabId === tid && p.originalName.toLowerCase() === name);
+      if (pad) dupOf.set(f, pad);
+    }
+    let todo = audio;
+    let replace = false;
+    if (dupOf.size) {
+      checking = true;
+      const tabTitle = (id: number) => tabs.find((t) => t.id === id)?.title ?? '';
+      const choice = await prompt!.ask([...dupOf].map(([f, p]) => `${tabTitle(p.tabId)}/${f.file.name}`), audio.length);
+      checking = false;
+      if (choice === 'cancel') return;
+      if (choice === 'skip') todo = audio.filter((f) => !dupOf.has(f));
+      else replace = true;
+    }
+    const dupSkipped = audio.length - todo.length;
+    if (todo.length === 0) {
+      addToast(`Nothing new to add (${dupSkipped} already on the board)`, 'success');
       return;
     }
     // Resolve every destination tab before uploading anything.
@@ -325,7 +358,7 @@
     try {
       // First spelling wins when folders differ only by case.
       const names = new Map<string | null, string | null>();
-      for (const f of audio) if (!names.has(keyOf(f))) names.set(keyOf(f), folderOf(f));
+      for (const f of todo) if (!names.has(keyOf(f))) names.set(keyOf(f), folderOf(f));
       for (const [key, name] of names) {
         if (name === null) {
           let id = activeTabId;
@@ -348,15 +381,15 @@
       load();
       return;
     }
-    uploadTotal = audio.length;
+    uploadTotal = todo.length;
     uploadDone = 0;
     const failures: string[] = [];
     let next = 0;
     const worker = async () => {
-      while (next < audio.length) {
-        const f = audio[next++];
+      while (next < todo.length) {
+        const f = todo[next++];
         try {
-          await dj.sfx.upload(tabFor.get(keyOf(f))!, f.file);
+          await dj.sfx.upload(tabFor.get(keyOf(f))!, f.file, { replace: replace ? dupOf.get(f)?.id : undefined });
         } catch (e) {
           failures.push((e as Error).message);
         }
@@ -364,14 +397,16 @@
       }
     };
     await Promise.all([worker(), worker()]);
-    const ok = audio.length - failures.length;
-    const extra = skipped ? `, ${skipped} not audio` : '';
+    const ok = todo.length - failures.length;
+    let extra = skipped ? `, ${skipped} not audio` : '';
+    if (dupSkipped) extra += `, ${dupSkipped} skipped (already on the board)`;
+    if (replace) extra += `, ${dupOf.size} replaced`;
     const tabsNote = created.length ? ` (new tab${created.length === 1 ? '' : 's'}: ${created.join(', ')})` : '';
     if (failures.length) addToast(`Added ${ok}, ${failures.length} failed: ${failures[0]}${extra}`, 'error');
     else addToast(`Added ${ok} sound${ok === 1 ? '' : 's'}${tabsNote}${extra}`, 'success');
     uploadTotal = uploadDone = 0;
     // Show where they went: the first folder's tab, or the open one.
-    const first = tabFor.get(keyOf(audio[0]));
+    const first = tabFor.get(keyOf(todo[0]));
     await load();
     if (first !== undefined && first !== activeTabId) selectTab(first);
   }
@@ -535,6 +570,7 @@
 </section>
 
 <PadEditor bind:open={editorOpen} pad={editingPad} {tabs} onchanged={load} />
+<ConflictPrompt bind:this={prompt} />
 
 <style>
   .sb { display: flex; flex-direction: column; gap: 10px; min-height: 0; height: 100%; }

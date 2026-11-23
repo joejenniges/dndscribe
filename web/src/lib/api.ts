@@ -293,6 +293,8 @@ export const dj = {
   },
 
   upload: uploadTrack,
+  /** Which of these upload targets already exist (asked before a batch). */
+  existing: (paths: string[]) => post<{ existing: string[] }>('/api/dj/files/exists', { paths }),
 
   sfx: {
     list: () => request<{ tabs: SfxTab[]; pads: SfxPad[] }>('/api/dj/sfx'),
@@ -301,8 +303,11 @@ export const dj = {
     stop: (id: number) => post<DjState>(`/api/dj/sfx/pads/${id}/stop`),
     stopAll: () => post<DjState>('/api/dj/sfx/stop'),
     gain: (gain: number) => post<DjState>('/api/dj/sfx/gain', { gain }),
-    upload: (tabId: number, file: File, opts: PutOpts = {}) =>
-      putFile<SfxPad>(`/api/dj/sfx/upload?tab=${tabId}&name=${encodeURIComponent(file.name)}`, file, opts),
+    /** Add a pad, or with opts.replace overwrite that pad's sound. */
+    upload: (tabId: number, file: File, opts: PutOpts & { replace?: number } = {}) =>
+      putFile<SfxPad>(
+        `/api/dj/sfx/upload?tab=${tabId}&name=${encodeURIComponent(file.name)}${opts.replace ? `&replace=${opts.replace}` : ''}`,
+        file, opts),
     tabs: {
       create: (title: string) => post<SfxTab>('/api/dj/sfx/tabs', { title }),
       rename: (id: number, title: string) =>

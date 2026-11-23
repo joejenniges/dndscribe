@@ -188,6 +188,29 @@ func (l *Library) MakeFolder(rel string) error {
 	return os.MkdirAll(full, 0o755)
 }
 
+// Existing returns the paths in rels that already exist as files, so the
+// upload dialog can ask "skip or overwrite?" before sending anything. Same
+// test SaveFile uses for ErrExists (os.Stat), so the answer matches what the
+// upload itself would do, including case-insensitive matches on Windows.
+// Invalid paths are left out; the upload reports them.
+func (l *Library) Existing(rels []string) []string {
+	out := []string{}
+	for _, r := range rels {
+		rel, err := CleanRelPath(r)
+		if err != nil || rel == "" {
+			continue
+		}
+		full, err := l.abs(rel)
+		if err != nil {
+			continue
+		}
+		if fi, err := os.Stat(full); err == nil && !fi.IsDir() {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // SaveFile writes an uploaded track to rel and adds it to the library.
 //
 // The body is streamed to a ".part" file next to the target and renamed into

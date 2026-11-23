@@ -158,7 +158,20 @@ func (h *Handler) mountSoundboard() {
 			return
 		}
 		body := http.MaxBytesReader(w, r.Body, maxSfxUploadBytes)
-		pad, err := sb.AddSound(r.Context(), tabID, r.URL.Query().Get("name"), body)
+		name := r.URL.Query().Get("name")
+		var pad *db.SfxPad
+		// ?replace=<pad id>: overwrite that pad's sound, keeping its
+		// label, colour, image and place (re-uploading a folder).
+		if rep := r.URL.Query().Get("replace"); rep != "" {
+			padID, perr := strconv.ParseInt(rep, 10, 64)
+			if perr != nil {
+				writeErr(w, http.StatusBadRequest, "invalid replace id")
+				return
+			}
+			pad, err = sb.ReplaceSound(r.Context(), padID, name, body)
+		} else {
+			pad, err = sb.AddSound(r.Context(), tabID, name, body)
+		}
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
 			writeErr(w, http.StatusRequestEntityTooLarge, "sound effects are limited to 50 MB")

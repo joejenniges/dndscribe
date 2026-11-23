@@ -2,13 +2,16 @@
   // Upload tracks into the server's music folder. Files come from the
   // pickers here, a drop on this dialog, or a drop anywhere on the DJ page
   // (the page calls addFiles). Before uploading it asks where they go: an
-  // existing folder or a new one.
+  // existing folder or a new one. Then it asks the server which targets
+  // already exist and, if any do, whether to skip or overwrite them, so
+  // re-uploading a folder that gained a few tracks only sends the new ones.
   //
   // Closing the dialog doesn't stop an upload in progress; the page shows a
   // progress chip (bound `uploading`) that reopens it.
   import { untrack } from 'svelte';
   import Modal from '$lib/components/ui/Modal.svelte';
   import Toggle from '$lib/components/ui/Toggle.svelte';
+  import ConflictPrompt from './ConflictPrompt.svelte';
   import { dj, UploadError } from '$lib/api';
   import { addToast } from '$lib/stores/toast';
   import {
@@ -31,7 +34,7 @@
     defaultFolder?: string;
   } = $props();
 
-  type Status = 'queued' | 'uploading' | 'done' | 'exists' | 'failed' | 'cancelled';
+  type Status = 'queued' | 'uploading' | 'done' | 'exists' | 'skipped' | 'failed' | 'cancelled';
   interface Item extends PickedFile {
     target: string;
     status: Status;
@@ -50,8 +53,9 @@
   let newName = $state('');
   let newParent = $state('');
   let keepRoot = $state(true);
-  let overwrite = $state(false);
   let dragOver = $state(false);
+  let checking = $state(false);
+  let prompt: ReturnType<typeof ConflictPrompt> | undefined = $state();
 
   let fileInput: HTMLInputElement | undefined = $state();
   let folderInput: HTMLInputElement | undefined = $state();
@@ -155,13 +159,38 @@
   }
 
   async function start() {
-    if (picked.length === 0 || nameError) return;
+    if (picked.length === 0 || nameError || checking) return;
+    const planned = picked.map((p) => ({ ...p, target: targetFor(p.rel) }));
+
+    // Ask before sending anything. If the check itself fails, upload
+    // anyway without overwriting: the server still refuses existing files
+    // with 409, so the worst case is the old behaviour.
+    let overwrite = false;
+    let exist = new Set<string>();
+    checking = true;
+    try {
+      exist = new Set((await dj.existing(planned.map((p) => p.target))).existing);
+    } catch (e) {
+      addToast(`Couldn't check for existing tracks: ${(e as Error).message}`, 'error');
+    } finally {
+      checking = false;
+    }
+    if (exist.size > 0) {
+      const choice = await prompt!.ask(planned.filter((p) => exist.has(p.target)).map((p) => p.target), planned.length);
+      if (choice === 'cancel') return;
+      overwrite = choice === 'overwrite';
+    }
+
     phase = 'uploading';
     uploading = true;
     ctrl = new AbortController();
     const signal = ctrl.signal;
-    items = picked.map((p) => ({ ...p, target: targetFor(p.rel), status: 'queued', sent: 0, error: '' }));
+    items = planned.map((p) => {
+      const skip = !overwrite && exist.has(p.target);
+      return { ...p, status: skip ? 'skipped' : 'queued', sent: skip ? p.file.size : 0, error: '' } as Item;
+    });
     const total = Math.max(1, totalBytes);
+    progress = items.reduce((s, x) => s + x.sent, 0) / total;
 
     let next = 0;
     const one = async (it: Item) => {
@@ -191,7 +220,10 @@
     // Two at a time: keeps the pipe full without making the server probe
     // a dozen files at once.
     const worker = async () => {
-      while (next < items.length && !signal.aborted) await one(items[next++]);
+      while (next < items.length && !signal.aborted) {
+        const it = items[next++];
+        if (it.status === 'queued') await one(it);
+      }
     };
     await Promise.all([worker(), worker()]);
     for (const it of items) if (it.status === 'queued') it.status = 'cancelled';
@@ -202,6 +234,7 @@
     ctrl = null;
     const n = (s: Status) => items.filter((i) => i.status === s).length;
     const parts = [`${n('done')} uploaded`];
+    if (n('skipped')) parts.push(`${n('skipped')} skipped`);
     if (n('exists')) parts.push(`${n('exists')} already there`);
     if (n('failed')) parts.push(`${n('failed')} failed`);
     if (n('cancelled')) parts.push(`${n('cancelled')} cancelled`);
@@ -217,12 +250,12 @@
 
   const counts = $derived({
     done: items.filter((i) => i.status === 'done').length,
-    exists: items.filter((i) => i.status === 'exists').length,
+    exists: items.filter((i) => i.status === 'exists' || i.status === 'skipped').length,
     failed: items.filter((i) => i.status === 'failed').length,
   });
 
   const STATUS_LABEL: Record<Status, string> = {
-    queued: 'Waiting', uploading: '', done: 'Done', exists: 'Already there', failed: 'Failed', cancelled: 'Cancelled',
+    queued: 'Waiting', uploading: '', done: 'Done', exists: 'Already there', skipped: 'Skipped', failed: 'Failed', cancelled: 'Cancelled',
   };
 
   const indent = (f: string) => '   '.repeat(Math.max(0, folderDepth(f) - 1));
@@ -300,8 +333,6 @@
         {/if}
       </fieldset>
 
-      <Toggle bind:checked={overwrite} label="Replace tracks that already exist" hint="Off: files with the same name are skipped" />
-
       <details class="preview">
         <summary class="tiny subtle">Show where each file goes</summary>
         <ul class="files">
@@ -341,8 +372,8 @@
     {#if phase === 'pick'}
       <span class="spacer"></span>
       <button class="btn" onclick={() => (open = false)}>Cancel</button>
-      <button class="btn-primary" onclick={start} disabled={picked.length === 0 || !!nameError}>
-        Upload{picked.length ? ` ${picked.length}` : ''}
+      <button class="btn-primary" onclick={start} disabled={picked.length === 0 || !!nameError || checking}>
+        {checking ? 'Checking...' : `Upload${picked.length ? ` ${picked.length}` : ''}`}
       </button>
     {:else if phase === 'uploading'}
       <button class="btn-ghost" onclick={cancel}>Stop uploading</button>
@@ -355,6 +386,8 @@
     {/if}
   {/snippet}
 </Modal>
+
+<ConflictPrompt bind:this={prompt} />
 
 <style>
   .drop {
