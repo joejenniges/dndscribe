@@ -15,7 +15,7 @@
 import { writable, get } from 'svelte/store';
 import type { OpusDecoder as OpusDecoderT } from 'opus-decoder';
 
-export type ListenState = 'off' | 'connecting' | 'blocked' | 'on' | 'error';
+export type ListenState = 'off' | 'connecting' | 'blocked' | 'on' | 'error' | 'elsewhere';
 
 const PREF = 'dj.listen';
 /** Whether this device wants to hear the test channel (remembered). */
@@ -43,6 +43,19 @@ function writePref(on: boolean) {
 const LEAD = 0.12;
 const MAX_AHEAD = 0.35;
 const RATE = 48000;
+
+// One tab per browser. The "on" choice is in localStorage, so every DJ tab
+// in a browser would otherwise play the stream, a few tens of ms apart,
+// which sounds hollow and metallic (comb filtering). The tab that starts
+// playing tells the others to stop (without changing the saved choice).
+const tabId = Math.random().toString(36).slice(2);
+const channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('dj-listen') : null;
+channel?.addEventListener('message', (e) => {
+  if (e.data?.type === 'playing' && e.data.tab !== tabId && running) {
+    stopListening(false);
+    listenState.set('elsewhere');
+  }
+});
 
 let ctx: AudioContext | null = null;
 let gain: GainNode | null = null;
@@ -128,6 +141,7 @@ async function resume() {
     }
   }
   if (ctx.state === 'running') {
+    channel?.postMessage({ type: 'playing', tab: tabId });
     removeUnlock();
     if (get(listenState) === 'blocked') listenState.set(ws?.readyState === WebSocket.OPEN ? 'on' : 'connecting');
   } else {

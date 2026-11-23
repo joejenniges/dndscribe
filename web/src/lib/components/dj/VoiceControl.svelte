@@ -25,13 +25,14 @@
   // before the bot reports the channel, and stopping then would undo it.
   let wasInTest = false;
   $effect(() => {
-    if (inTest && $listenWanted) void startListening(false);
+    // 'elsewhere': another tab of this browser took over; don't fight it.
+    if (inTest && $listenWanted && $listenState !== 'elsewhere') void startListening(false);
     else if (!inTest && wasInTest) stopListening(false);
     wasInTest = inTest;
   });
 
   function toggleListen() {
-    if ($listenWanted && $listenState !== 'blocked') stopListening();
+    if ($listenWanted && $listenState !== 'blocked' && $listenState !== 'elsewhere') stopListening();
     else void startListening();
   }
   const listenLabel = $derived(
@@ -39,6 +40,7 @@
       : $listenState === 'on' ? 'Listening'
       : $listenState === 'blocked' ? 'Tap to hear'
       : $listenState === 'error' ? "Can't play audio"
+      : $listenState === 'elsewhere' ? 'Playing in another tab'
       : 'Connecting…',
   );
   let channelList = $state<VoiceChannel[]>([]);
