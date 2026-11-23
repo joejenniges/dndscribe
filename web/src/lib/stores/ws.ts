@@ -1,7 +1,7 @@
 import { writable, type Writable } from 'svelte/store';
 import { subscribe as wsSubscribe } from '$lib/ws';
 import type { BotStatus, VoiceMember } from '$lib/types';
-import { djState, djLibraryVersion, djMeters, presence } from '$lib/stores/dj';
+import { djState, djLibraryVersion, djMeters, presence, djCueChange, djAnalysisChange } from '$lib/stores/dj';
 
 export const botStatus: Writable<BotStatus> = writable({ recording: false, channelName: null, campaignId: null });
 export const voiceMembers: Writable<VoiceMember[]> = writable([]);
@@ -40,6 +40,12 @@ export function initWsStores(): () => void {
         break;
       case 'dj_library':
         djLibraryVersion.update((n) => n + 1);
+        break;
+      case 'dj_cues':
+        djCueChange.update((c) => ({ trackId: msg.trackId, n: c.n + 1 }));
+        break;
+      case 'dj_analysis':
+        djAnalysisChange.update((c) => ({ trackId: msg.trackId, n: c.n + 1 }));
         break;
       case 'save_recordings':
         saveRecordingsEnabled.set(msg.data);

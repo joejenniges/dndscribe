@@ -172,6 +172,71 @@ export interface DjDeck {
   /** Loaded by Auto DJ or a scene rather than by hand. */
   auto: boolean;
   error?: string;
+  /** The loaded track's hotcues and goto triggers (v4). */
+  hotcues: DjHotcue[];
+  gotos: DjGoto[];
+  lastJump?: DjCueJump;
+}
+
+/** One of a track's eight hotcue slots. */
+export interface DjHotcue {
+  slot: number;
+  positionMs: number;
+  label: string;
+  color: string;
+}
+
+/** A goto trigger: crossing positionMs while armed jumps to targetSlot. */
+export interface DjGoto {
+  id: number;
+  positionMs: number;
+  targetSlot: number;
+  enabled: boolean;
+  label: string;
+  /** Why it can't fire, e.g. "target missing" (state only). */
+  problem?: string;
+}
+
+export interface DjCueJump {
+  kind: 'hotcue' | 'goto';
+  slot: number;
+  gotoId?: number;
+  fromMs: number;
+  toMs: number;
+  at: number;
+  seamless: boolean;
+}
+
+export interface DjTrackCues {
+  trackId: number;
+  hotcues: DjHotcue[];
+  gotos: DjGoto[];
+}
+
+export type DjAnalysisStatus = 'none' | 'pending' | 'running' | 'ready' | 'unavailable' | 'failed';
+
+/** Beat analysis for one track. */
+export interface DjAnalysis {
+  trackId: number;
+  status: DjAnalysisStatus;
+  source: 'auto' | 'manual' | 'none';
+  bpm: number | null;
+  confidence: number | null;
+  /** Absolute beat positions, ms. */
+  beats: number[];
+  error: string;
+  current: boolean;
+  /** Confident (or hand-made) enough to draw and snap to. */
+  usable: boolean;
+  confidenceThreshold: number;
+}
+
+export interface DjGridEdit {
+  op: 'half' | 'double' | 'shift' | 'grid' | 'off';
+  phase?: number;
+  shiftMs?: number;
+  bpm?: number;
+  firstBeatMs?: number;
 }
 
 /** An automated crossfader move; clients animate it locally. */

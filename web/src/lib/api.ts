@@ -2,7 +2,7 @@ import type { ConnectUrl,
   Campaign, Session, TranscriptionLine, VoiceChannel, VoiceMember,
   BotStatus, IgnoredUser, NicknamePreset, NicknameCategory,
   SessionPreview, SearchResult,
-  DjTrack, DjScene, DjState, DjSettings, DjWaveform, SfxTab, SfxPad,
+  DjTrack, DjScene, DjState, DjSettings, DjWaveform, SfxTab, SfxPad, DjTrackCues, DjAnalysis, DjGridEdit,
 } from './types';
 
 const BASE = '';
@@ -274,6 +274,28 @@ export const dj = {
       binsPerSecond: Number(res.headers.get('X-Bins-Per-Second')) || 100,
       data: new Uint8Array(await res.arrayBuffer()),
     };
+  },
+
+  /** Hotcue and goto definitions (live jumps and arming are WS commands). */
+  cues: {
+    get: (trackId: number) => request<DjTrackCues>(`/api/dj/tracks/${trackId}/cues`),
+    setHotcue: (trackId: number, slot: number, h: { positionMs: number; label?: string; color?: string }) =>
+      request<DjTrackCues>(`/api/dj/tracks/${trackId}/hotcues/${slot}`, { method: 'PUT', body: JSON.stringify(h) }),
+    deleteHotcue: (trackId: number, slot: number) =>
+      request<DjTrackCues>(`/api/dj/tracks/${trackId}/hotcues/${slot}`, { method: 'DELETE' }),
+    createGoto: (trackId: number, g: { positionMs: number; targetSlot: number; enabled?: boolean; label?: string }) =>
+      post<DjTrackCues>(`/api/dj/tracks/${trackId}/gotos`, g),
+    updateGoto: (trackId: number, id: number, g: { positionMs: number; targetSlot: number; enabled: boolean; label?: string }) =>
+      request<DjTrackCues>(`/api/dj/tracks/${trackId}/gotos/${id}`, { method: 'PUT', body: JSON.stringify(g) }),
+    deleteGoto: (trackId: number, id: number) =>
+      request<DjTrackCues>(`/api/dj/tracks/${trackId}/gotos/${id}`, { method: 'DELETE' }),
+  },
+  /** Beat analysis: GET queues it if missing; POST re-analyses; PATCH edits. */
+  analysis: {
+    get: (trackId: number) => request<DjAnalysis>(`/api/dj/tracks/${trackId}/analysis`),
+    reanalyze: (trackId: number) => post<{ status: string }>(`/api/dj/tracks/${trackId}/analysis`),
+    edit: (trackId: number, e: DjGridEdit) =>
+      request<DjAnalysis>(`/api/dj/tracks/${trackId}/analysis`, { method: 'PATCH', body: JSON.stringify(e) }),
   },
 
   tracks: () => request<DjTrack[]>('/api/dj/tracks'),

@@ -10,6 +10,11 @@ export const djState: Writable<DjState | null> = writable(null);
 // any client). Pages that list those refetch when it changes.
 export const djLibraryVersion: Writable<number> = writable(0);
 
+// A track's cue definitions or beat analysis changed on some device
+// (dj_cues / dj_analysis). Caches drop that track and views refetch.
+export const djCueChange: Writable<{ trackId: number; n: number }> = writable({ trackId: 0, n: 0 });
+export const djAnalysisChange: Writable<{ trackId: number; n: number }> = writable({ trackId: 0, n: 0 });
+
 // Peak levels, ~10 updates a second while anything is audible (dj_meters).
 // Kept apart from djState so a meter tick never re-renders the whole page.
 export const djMeters: Writable<DjMeters> = writable({ decks: [0, 0], master: 0 });

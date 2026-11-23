@@ -18,7 +18,9 @@
   import { addToast } from '$lib/stores/toast';
   import { deviceKind, local } from '$lib/dj/live';
   import type { DjScene, DjTrack } from '$lib/types';
-  import DeckWave from '$lib/components/dj/DeckWave.svelte';
+  import ScrollLanes from '$lib/components/dj/ScrollLanes.svelte';
+  import CueMenu from '$lib/components/dj/CueMenu.svelte';
+  import CueEditor from '$lib/components/dj/CueEditor.svelte';
   import DeckPanel from '$lib/components/dj/DeckPanel.svelte';
   import Mixer from '$lib/components/dj/Mixer.svelte';
   import QueuePanel from '$lib/components/dj/QueuePanel.svelte';
@@ -185,7 +187,7 @@
   // (Saved as deckH/queueFolded: older builds saved consoleH and an
   // auto-folded queue under other names, which are deliberately ignored.)
   const MIN_QUEUE = 160;
-  const MIN_CONSOLE = 180, MAX_CONSOLE = 360;
+  const MIN_CONSOLE = 180, MAX_CONSOLE = 460;
   let consoleH = $state<number | null>(saved.deckH ?? null);
   let consoleEl: HTMLDivElement | undefined = $state();
   let queueCollapsed = $state<boolean>(saved.queueFolded ?? false);
@@ -243,6 +245,11 @@
   }
 
   // Performance mode library drawer.
+  let perfLanes = $state(local.get('dj.perf.lanes') === '1');
+  function togglePerfLanes() {
+    perfLanes = !perfLanes;
+    local.set('dj.perf.lanes', perfLanes ? '1' : '0');
+  }
   let perfLib = $state(local.get('dj.perf.lib') === '1');
   function togglePerfLib() {
     perfLib = !perfLib;
@@ -344,6 +351,8 @@
         </button>
       {/if}
       {#if mode === 'performance'}
+        <button class="btn btn-sm" class:active={perfLanes} onclick={togglePerfLanes} aria-expanded={perfLanes}
+          title="Scrolling waveforms with cue markers, for placing cues precisely">Waveform</button>
         <button class="btn btn-sm" class:active={perfLib} onclick={togglePerfLib} aria-expanded={perfLib}>Library</button>
       {:else if narrow && !stacked}
         <button class="btn btn-sm" class:active={drawerOpen} onclick={() => (drawerOpen = !drawerOpen)} aria-expanded={drawerOpen}>Library</button>
@@ -389,9 +398,10 @@
         {/if}
 
         <section class="center" aria-label="Decks and mixer" bind:clientHeight={centerH}>
-          <div class="waves card" bind:clientHeight={wavesH}>
-            <DeckWave {st} deck={0} overviewOnly lane {live} />
-            <DeckWave {st} deck={1} overviewOnly lane {live} />
+          <!-- v4: scrolling beat lanes on top; each deck's whole-track
+               overview now sits inside its deck panel. -->
+          <div class="waves" bind:clientHeight={wavesH}>
+            <ScrollLanes {st} {live} />
           </div>
           <div class="console" bind:this={consoleEl}
             style:height={!stacked && consoleH ? `${Math.min(consoleH, maxConsole)}px` : null}>
@@ -454,6 +464,10 @@
           <!-- Wide (landscape tablet, desktop): decks + mixer on the left,
                scenes + soundboard on the right at full height so the pads
                are on screen without scrolling. Narrow: one column. -->
+          {#if perfLanes}
+            <!-- Optional on tablets: scenes and pads keep the room by default. -->
+            <div class="perf-lanes"><ScrollLanes {st} {live} laneHeight={44} /></div>
+          {/if}
           <div class="perf-cols">
             <div class="pctl">
               <div class="pdecks">
@@ -504,6 +518,9 @@
 {#if uploading && !uploadOpen}
   <button class="upload-chip" onclick={() => (uploadOpen = true)}>Uploading {Math.round(uploadProgress * 100)}%</button>
 {/if}
+
+<CueMenu />
+<CueEditor />
 
 <UploadDialog bind:this={uploadDialog} bind:open={uploadOpen} bind:uploading bind:progress={uploadProgress}
   {folders} defaultFolder={selectedFolder} />
@@ -569,7 +586,8 @@
   /* Scrolls only when the decks, mixer and the queue's minimum don't fit
      (short windows, or the mixer stacked under the decks). */
   .center { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 12px; container-type: inline-size; overflow-y: auto; overscroll-behavior: contain; }
-  .waves { padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+  .waves { flex-shrink: 0; min-width: 0; }
+  .perf-lanes { flex-shrink: 0; min-width: 0; margin-bottom: 10px; }
   /* Decks and mixer: content height, never stretched by a tall window (the
      queue below takes the spare height). Cards in the row share the tallest
      one's height; their contents sit at the top. */
@@ -626,7 +644,7 @@
   /* ---- Performance ---- */
   .perf-grid { height: 100%; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 12px; min-height: 0; }
   .perf-grid.with-lib { grid-template-columns: minmax(0, 1fr) minmax(320px, 380px); }
-  .perf-main { min-height: 0; overflow-y: auto; container-type: inline-size; }
+  .perf-main { min-height: 0; overflow-y: auto; container-type: inline-size; display: flex; flex-direction: column; }
   .perf-cols { display: flex; flex-direction: column; gap: 10px; min-height: 100%; }
   .pctl, .ptrig { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
   .ptrig { flex: 1 0 auto; }
@@ -638,7 +656,8 @@
      soundboard instead of the page; min-height keeps it usable on very
      short windows (then the page scrolls). */
   @container (min-width: 940px) {
-    .perf-cols { display: grid; grid-template-columns: minmax(420px, 0.75fr) minmax(0, 1.25fr); align-items: stretch; height: 100%; min-height: 520px; }
+    /* flex: fills what the optional waveform lanes leave. */
+    .perf-cols { display: grid; grid-template-columns: minmax(420px, 0.75fr) minmax(0, 1.25fr); align-items: stretch; flex: 1 0 0; min-height: 520px; }
     .pctl { overflow-y: auto; min-height: 0; }
     .pdecks { grid-template-columns: 1fr; gap: 10px; }
     .ptrig { min-height: 0; }

@@ -11,6 +11,11 @@
   // Seeking: click or drag along the overview to jump; drag the lower view
   // sideways to scrub. The position follows the pointer locally and one seek
   // is sent on release, since each seek restarts the server's decoder.
+  //
+  // Cues (v4): hotcue and goto markers are drawn on the overview. Dragging
+  // a marker moves it (snapped to the nearest beat unless Shift is held)
+  // and saves once on release; right click or a long press opens the cue
+  // menu at that point of the track.
   import { onMount } from 'svelte';
   import { dj } from '$lib/api';
   import { djCmd } from '$lib/dj/control';
@@ -19,6 +24,9 @@
   import type { DjState, DjWaveform } from '$lib/types';
   import { fmtMs } from './format';
   import { waveCache } from './wavecache';
+  import { cueMenu, snapMs, loadAnalysis, gridVersion, fmtCue, moveMarker, longPress, gotoName } from '$lib/dj/cues';
+  import { drawMarkers, markerAt, refMs, type MarkerRef } from '$lib/dj/wavedraw';
+  import type { DjAnalysis } from '$lib/types';
 
   let {
     st,
@@ -48,6 +56,40 @@
   const nextId = $derived(st?.queue?.[0]?.id ?? 0);
   const running = $derived(!!d?.playing && !!st?.connected);
   const durationMs = $derived(d?.track?.durationMs ?? 0);
+  const hotcues = $derived(d?.hotcues ?? []);
+  const gotos = $derived(d?.gotos ?? []);
+  const cueKey = $derived(JSON.stringify([hotcues, gotos]));
+
+  let analysis = $state<DjAnalysis | null>(null);
+  $effect(() => {
+    void $gridVersion;
+    const id = trackId;
+    analysis = null;
+    if (!id) return;
+    let alive = true;
+    loadAnalysis(id).then((a) => alive && (analysis = a), () => {});
+    return () => (alive = false);
+  });
+
+  // Marker drag on the overview.
+  let mdrag = $state<{ ref: MarkerRef; ms: number; moved: boolean; x0: number } | null>(null);
+  const lp = longPress((e) => openMenu(e));
+  function openMenu(e: { clientX: number; clientY: number; currentTarget?: EventTarget | null }, target?: HTMLElement) {
+    const el = target ?? overviewEl?.parentElement;
+    if (!trackId || !durationMs || !el) return;
+    const r = el.getBoundingClientRect();
+    const x = e.clientX - r.left;
+    const at = Math.max(0, Math.min(durationMs, (x / r.width) * durationMs));
+    const m = markerAt(x, hotcues, gotos, (ms) => (ms / durationMs) * r.width);
+    drag = null;
+    scrubPos = null;
+    cueMenu.set({ deck, x: e.clientX, y: e.clientY, atMs: m ? refMs(m, hotcues, gotos) : at,
+      hotcue: m?.kind === 'hotcue' ? m.slot : undefined, gotoId: m?.kind === 'goto' ? m.id : undefined });
+  }
+  function onContext(e: MouseEvent) {
+    e.preventDefault();
+    openMenu(e, e.currentTarget as HTMLElement);
+  }
 
   let wave = $state<DjWaveform | null>(null);
   let waveFor = 0;
@@ -120,11 +162,29 @@
   function onDown(kind: 'overview' | 'scroll', e: PointerEvent) {
     if (!seekable || e.button !== 0) return;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    if (kind === 'overview') {
+      lp.down(e);
+      const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const m = markerAt(e.clientX - r.left, hotcues, gotos, (ms) => (ms / durationMs) * r.width, e.pointerType === 'mouse' ? 6 : 12);
+      if (m) {
+        mdrag = { ref: m, ms: refMs(m, hotcues, gotos), moved: false, x0: e.clientX };
+        return;
+      }
+    }
     drag = { kind, startX: e.clientX, startPos: currentPos(), moved: false };
     if (kind === 'overview') scrubPos = overviewPos(e);
   }
 
   function onMove(e: PointerEvent) {
+    lp.move(e);
+    if (mdrag) {
+      if (Math.abs(e.clientX - mdrag.x0) > 3) {
+        mdrag.moved = true;
+        lp.cancel();
+      }
+      if (mdrag.moved) mdrag.ms = snapMs(overviewPos(e), analysis, e.shiftKey);
+      return;
+    }
     if (!drag) return;
     const dx = e.clientX - drag.startX;
     if (Math.abs(dx) > 3) drag.moved = true;
@@ -138,6 +198,13 @@
   }
 
   function onUp() {
+    lp.cancel();
+    if (mdrag) {
+      const m = mdrag;
+      mdrag = null;
+      if (m.moved && trackId) moveMarker(trackId, m.ref, m.ms, hotcues, gotos);
+      return;
+    }
     if (!drag) return;
     const dr = drag;
     drag = null;
@@ -150,6 +217,8 @@
   }
 
   function onCancel() {
+    lp.cancel();
+    mdrag = null;
     drag = null;
     scrubPos = null;
   }
@@ -262,6 +331,12 @@
     const px = Math.round(Math.min(1, posMs / durationMs) * W);
     g.drawImage(unplayed, 0, 0);
     if (px > 0) g.drawImage(played, 0, 0, px, H, 0, 0, px, H);
+    const dpr = window.devicePixelRatio || 1;
+    if (hotcues.length || gotos.length) {
+      const names = new Map(gotos.map((x) => [x.id, gotoName(gotos, x)]));
+      drawMarkers(g, hotcues, gotos, (ms) => (ms / durationMs) * W, W, H, dpr,
+        { flags: H >= 36 * dpr, drag: mdrag?.moved ? { ref: mdrag.ref, ms: mdrag.ms } : null, gotoNames: names });
+    }
     g.fillStyle = colors.head;
     g.fillRect(Math.min(px, W - 2), 0, 2, H);
   }
@@ -344,7 +419,7 @@
       else lastShown = pos;
       // While nothing moves, don't redraw every frame (the tablet's battery).
       const sizeKey = `${overviewEl?.clientWidth}x${overviewEl?.clientHeight}|${scrollEl?.clientWidth}`;
-      const key = `${Math.round(pos)}|${status}|${trackId}|${sizeKey}|${overviewDirty}`;
+      const key = `${Math.round(pos)}|${status}|${trackId}|${sizeKey}|${overviewDirty}|${cueKey}|${mdrag?.ms}`;
       if (!running && key === lastDrawKey) return;
       lastDrawKey = key;
       drawOverview(pos);
@@ -375,8 +450,11 @@
         aria-valuemin={0} aria-valuemax={Math.round(durationMs / 1000)} aria-valuenow={posSec}
         aria-valuetext={posText} aria-disabled={!seekable}
         onpointerdown={(e) => onDown('overview', e)} onpointermove={onMove} onpointerup={onUp} onpointercancel={onCancel}
-        onkeydown={onKey}>
+        onkeydown={onKey} oncontextmenu={onContext}>
         <canvas bind:this={overviewEl} class="overview" aria-hidden="true"></canvas>
+        {#if mdrag?.moved}
+          <span class="tip" style:left="{(mdrag.ms / Math.max(1, durationMs)) * 100}%">{fmtCue(mdrag.ms)}</span>
+        {/if}
         {#if !d?.track}
           <span class="overlay tiny subtle">Deck {DECK_NAMES[deck]} empty</span>
         {:else if d.loading || status === 'loading'}
@@ -403,7 +481,7 @@
   .wrap { position: relative; }
   canvas { display: block; width: 100%; }
   .overview { height: 30px; }
-  .tall .overview { height: 46px; }
+  .tall .overview { height: 40px; }
   .lane .overview { height: 40px; }
   .lane .overview-wrap { background: var(--surface-sunken); border-radius: var(--radius-sm); }
   .lane .tag { width: 26px; height: 26px; font-size: 13px; }
@@ -415,4 +493,9 @@
   .scroll-wrap.seekable { cursor: grab; }
   .scroll-wrap.seekable:active { cursor: grabbing; }
   .overlay { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+  .tip {
+    position: absolute; bottom: calc(100% + 4px); transform: translateX(-50%); pointer-events: none; white-space: nowrap;
+    background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: 4px; padding: 1px 6px;
+    font-size: 11px; font-variant-numeric: tabular-nums; z-index: 5;
+  }
 </style>

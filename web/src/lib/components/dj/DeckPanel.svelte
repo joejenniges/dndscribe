@@ -10,7 +10,12 @@
   //
   // The round "art" is a progress ring around the track's initials. There's
   // no album art in the library, and it's deliberately not a turntable: the
-  // decks don't scratch or beatmatch.
+  // decks don't scratch or beatmatch. With a confident beat analysis the
+  // ring shows the track's estimated BPM instead: metadata only, nothing
+  // here syncs or beatmatches.
+  //
+  // v4: the whole-track overview (with cue markers) sits under the
+  // transport, then the eight hotcue buttons and the goto toggles.
   import { djCmd } from '$lib/dj/control';
   import { deckPosition, deckHeard, DECK_NAMES } from '$lib/dj/live';
   import { clock } from '$lib/dj/clock';
@@ -20,6 +25,9 @@
   import Fader from './Fader.svelte';
   import Meter from './Meter.svelte';
   import DeckWave from './DeckWave.svelte';
+  import HotcueRow from './HotcueRow.svelte';
+  import { loadAnalysis, gridVersion } from '$lib/dj/cues';
+  import type { DjAnalysis } from '$lib/types';
   import { fmtMs } from './format';
   import { folderName, parentOf } from './library';
 
@@ -53,6 +61,18 @@
   );
   const folder = $derived(t?.path ? folderName(parentOf(t.path)) : '');
   const selected = $derived($hotkeysOn && $selectedDeck === deck);
+
+  let analysis = $state<DjAnalysis | null>(null);
+  $effect(() => {
+    void $gridVersion;
+    const id = t?.id;
+    analysis = null;
+    if (!id) return;
+    let alive = true;
+    loadAnalysis(id).then((a) => alive && (analysis = a), () => {});
+    return () => (alive = false);
+  });
+  const bpm = $derived(analysis?.usable && analysis.bpm ? analysis.bpm.toFixed(1) : '');
 
   let busy = $state<string | null>(null);
   async function run(key: string, ...steps: [string, Record<string, unknown>?][]) {
@@ -113,8 +133,8 @@
 
   <div class="body">
     {#if !compact}
-      <div class="ring" style:--p={progress} aria-hidden="true">
-        <span>{initials}</span>
+      <div class="ring" style:--p={progress} aria-hidden={!bpm} title={bpm ? `Estimated tempo ${bpm} BPM (from beat analysis)` : undefined}>
+        {#if bpm}<span class="bpm">{bpm}<small>BPM</small></span>{:else}<span>{initials}</span>{/if}
       </div>
     {/if}
 
@@ -159,13 +179,19 @@
       </div>
     {/if}
   </div>
+
+  {#if !compact}
+    <DeckWave {st} {deck} overviewOnly tall bare {live} />
+  {/if}
+  <HotcueRow {st} {deck} {live} {compact} />
 </section>
 
 <style>
   .deck {
     --deck-color: var(--deck-a);
     position: relative; overflow: hidden;
-    padding: 12px 14px 12px 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0;
+    padding: 12px 14px 12px 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0;
+    container: deck / inline-size;
     background: linear-gradient(180deg, color-mix(in srgb, var(--deck-color) 7%, var(--surface)), var(--surface) 55%);
     transition: border-color 0.2s, box-shadow 0.2s;
   }
@@ -201,13 +227,15 @@
   .body { display: flex; align-items: center; gap: 16px; min-height: 0; }
   .ring {
     --p: 0;
-    flex-shrink: 0; width: 92px; height: 92px; border-radius: 50%; display: grid; place-items: center;
+    flex-shrink: 0; width: 78px; height: 78px; border-radius: 50%; display: grid; place-items: center;
     background: conic-gradient(var(--deck-color) calc(var(--p) * 360deg), var(--surface-sunken) 0);
     position: relative; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
   }
   .ring::before { content: ''; position: absolute; inset: 6px; border-radius: 50%; background: radial-gradient(circle at 50% 40%, var(--surface-raised), var(--surface-sunken)); }
   .ring span { position: relative; font-weight: 800; font-size: 22px; color: var(--text-2); letter-spacing: 0.04em; }
   .on-air .ring span { color: var(--deck-color); }
+  .ring .bpm { font-size: 19px; letter-spacing: 0; display: flex; flex-direction: column; align-items: center; line-height: 1; font-variant-numeric: tabular-nums; }
+  .ring .bpm small { font-size: 9px; font-weight: 700; letter-spacing: 0.1em; color: var(--text-3); margin-top: 3px; }
 
   .mid { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
   .time { display: flex; align-items: baseline; gap: 10px; font-variant-numeric: tabular-nums; }
@@ -225,7 +253,7 @@
   .play svg { width: 24px; height: 24px; }
   .transport .play.on { background: var(--deck-color); color: #111; border-color: var(--deck-color); }
 
-  .gain { display: flex; gap: 6px; align-items: stretch; height: 132px; flex-shrink: 0; }
+  .gain { display: flex; gap: 6px; align-items: stretch; height: 114px; flex-shrink: 0; }
 
   /* Performance: waveform inside the card, time and transport on one row,
      no ring or gain (gain is a setup control, kept in Studio). */
