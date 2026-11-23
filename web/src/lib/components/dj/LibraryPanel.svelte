@@ -193,16 +193,110 @@
     const to = [parentOf(from), name].filter(Boolean).join('/');
     try {
       await dj.folders.rename(from, to);
-      const move = (p: string) => (p === from ? to : inFolder(p, from) ? to + p.slice(from.length) : p);
-      if (selected) selected = move(selected);
-      if ([...collapsed].some((c) => c === from || inFolder(c, from))) {
-        collapsed = new Set([...collapsed].map(move));
-        local.set('dj.lib.collapsed', JSON.stringify([...collapsed]));
-      }
+      remapLocal(from, to);
       onchanged?.();
     } catch (e) {
       addToast(`Couldn't rename: ${(e as Error).message}`, 'error');
     }
+  }
+  /** After a rename or move, keep the selection and collapsed set pointing
+   *  at the same folders. */
+  function remapLocal(from: string, to: string) {
+    const move = (p: string) => (p === from ? to : p && inFolder(p, from) ? to + p.slice(from.length) : p);
+    if (selected) selected = move(selected);
+    if ([...collapsed].some((c) => c === from || inFolder(c, from))) {
+      collapsed = new Set([...collapsed].map(move));
+      local.set('dj.lib.collapsed', JSON.stringify([...collapsed]));
+    }
+  }
+
+  // ---- Arrange: drag a folder before/after another, or into one ----
+  // Dropping on the top or bottom quarter of a row places the folder next to
+  // it; the middle puts it inside; "All music" moves it to the top level.
+  // Moving to another parent is a rename on the server; the order among the
+  // new siblings is saved separately (PUT /folders/order).
+  // Keyboard equivalent on a focused row (HTML5 drag doesn't work on touch):
+  // Alt+Up/Down reorders, Alt+Right moves into the folder above, Alt+Left
+  // moves out to the parent's level.
+  type Zone = 'before' | 'after' | 'into';
+  let dragF = $state<string | null>(null);
+  let dropAt = $state<{ f: string; zone: Zone } | null>(null);
+  const siblings = (parent: string) => folders.filter((o) => parentOf(o) === parent);
+  const join = (parent: string, name: string) => (parent ? `${parent}/${name}` : name);
+  // A folder can't go into itself or its own sub-folders.
+  const canDrop = (src: string, target: string) => target !== src && !(target && inFolder(target, src));
+
+  function onFolderDragStart(e: DragEvent, f: string) {
+    if (compact || renaming) return;
+    dragF = f;
+    e.dataTransfer?.setData('text/plain', f);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+  }
+  function zoneOf(e: DragEvent, target: string): Zone {
+    if (target === '') return 'into';
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const y = (e.clientY - r.top) / r.height;
+    return y < 0.25 ? 'before' : y > 0.75 ? 'after' : 'into';
+  }
+  function onFolderDragOver(e: DragEvent, target: string) {
+    if (dragF === null || !canDrop(dragF, target)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    dropAt = { f: target, zone: zoneOf(e, target) };
+  }
+  function onFolderDrop(e: DragEvent, target: string) {
+    if (dragF === null || !canDrop(dragF, target)) return endFolderDrag();
+    e.preventDefault();
+    const src = dragF;
+    const zone = zoneOf(e, target);
+    endFolderDrag();
+    if (zone === 'into') void moveFolder(src, target, null, false);
+    else void moveFolder(src, parentOf(target), target, zone === 'after');
+  }
+  function endFolderDrag() {
+    dragF = null;
+    dropAt = null;
+  }
+
+  /** Move src under newParent, next to `anchor` (before or after it), or
+   *  at the end when anchor is null. */
+  async function moveFolder(src: string, newParent: string, anchor: string | null, after: boolean) {
+    const name = folderName(src);
+    const dst = join(newParent, name);
+    const moving = dst !== src;
+    if (moving && folders.some((o) => o !== src && o.toLowerCase() === dst.toLowerCase())) {
+      addToast(`${newParent ? folderName(newParent) : 'The top level'} already has a folder called ${name}`, 'error');
+      return;
+    }
+    const order = siblings(newParent).filter((o) => o !== src);
+    let at = anchor === null ? order.length : order.indexOf(anchor) + (after ? 1 : 0);
+    if (at < 0) at = order.length;
+    order.splice(at, 0, dst);
+    try {
+      if (moving) {
+        await dj.folders.rename(src, dst);
+        remapLocal(src, dst);
+        if (newParent && collapsed.has(newParent)) toggle(newParent); // show where it went
+      }
+      await dj.folders.order(order);
+    } catch (e) {
+      addToast(`Couldn't move ${name}: ${(e as Error).message}`, 'error');
+    }
+    onchanged?.();
+  }
+
+  function folderKey(e: KeyboardEvent, f: string) {
+    if (!e.altKey || compact) return;
+    const parent = parentOf(f);
+    const sibs = siblings(parent);
+    const i = sibs.indexOf(f);
+    if (e.key === 'ArrowUp' && i > 0) void moveFolder(f, parent, sibs[i - 1], false);
+    else if (e.key === 'ArrowDown' && i < sibs.length - 1) void moveFolder(f, parent, sibs[i + 1], true);
+    else if (e.key === 'ArrowRight' && i > 0) void moveFolder(f, sibs[i - 1], null, false);
+    else if (e.key === 'ArrowLeft' && parent !== '') void moveFolder(f, parentOf(parent), parent, true);
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
   }
   function renameKey(e: KeyboardEvent) {
     if (e.key === 'Escape') {
@@ -282,7 +376,9 @@
   <ul class="folders" aria-label="Folders" bind:this={foldersEl}
     class:sized={foldersH !== null && !foldersFolded}
     style:height={foldersH !== null && !foldersFolded ? `${Math.min(foldersH, maxFolders)}px` : null}>
-    <li class:selected={selected === ''} class:current={st?.folder === ''}>
+    <li class:selected={selected === ''} class:current={st?.folder === ''}
+      class:drop-into={dropAt?.f === '' && dropAt.zone === 'into'}
+      ondragover={(e) => onFolderDragOver(e, '')} ondragleave={() => (dropAt = null)} ondrop={(e) => onFolderDrop(e, '')}>
       {#if folders.length}
         <button class="twist" onclick={toggleFolders} aria-expanded={!foldersFolded}
           aria-label="{foldersFolded ? 'Expand' : 'Collapse'} all music">{foldersFolded ? '▸' : '▾'}</button>
@@ -298,7 +394,13 @@
     {#each foldersFolded ? [] : folders as f (f)}
       {#if !hidden(f)}
         {@const fs = stats.get(f)}
-        <li class:selected={selected === f} class:current={st?.folder === f} style:--depth={folderDepth(f)}>
+        <li class:selected={selected === f} class:current={st?.folder === f} style:--depth={folderDepth(f)}
+          draggable={!compact && renaming !== f} class:dragging={dragF === f}
+          class:drop-before={dropAt?.f === f && dropAt.zone === 'before'}
+          class:drop-after={dropAt?.f === f && dropAt.zone === 'after'}
+          class:drop-into={dropAt?.f === f && dropAt.zone === 'into'}
+          ondragstart={(e) => onFolderDragStart(e, f)} ondragend={endFolderDrag}
+          ondragover={(e) => onFolderDragOver(e, f)} ondragleave={() => (dropAt = null)} ondrop={(e) => onFolderDrop(e, f)}>
           {#if hasChildren(f)}
             <button class="twist" onclick={() => toggle(f)} aria-expanded={!collapsed.has(f)}
               aria-label="{collapsed.has(f) ? 'Expand' : 'Collapse'} {folderName(f)}">{collapsed.has(f) ? '▸' : '▾'}</button>
@@ -311,7 +413,9 @@
                 aria-label="New name for {folderName(f)}" />
             </form>
           {:else}
-            <button class="row-main" onclick={() => (selected = f)} ondblclick={() => !compact && startRename(f)}>
+            <button class="row-main" onclick={() => (selected = f)} ondblclick={() => !compact && startRename(f)}
+              onkeydown={(e) => folderKey(e, f)}
+              title={compact ? undefined : 'Drag to rearrange, or onto another folder to put it inside (Alt+arrow keys also work). Double-click to rename.'}>
               <span class="row-title">{folderName(f)}</span>
               <span class="tiny subtle">{fs?.count ?? 0}{fs?.ms ? ` · ${fmtMs(fs.ms)}` : ''}</span>
             </button>
@@ -408,6 +512,11 @@
   .folders li { display: flex; align-items: center; gap: 4px; padding-left: calc(var(--depth, 0) * 14px); border-radius: var(--radius-sm); min-height: 44px; }
   .folders li.selected { background: var(--surface-raised); }
   .folders li.current .row-title { color: var(--accent-text, var(--accent)); }
+  .folders li[draggable='true'] { cursor: grab; }
+  .folders li.dragging { opacity: 0.45; }
+  .folders li.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+  .folders li.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+  .folders li.drop-into { outline: 2px solid var(--accent); outline-offset: -2px; background: color-mix(in srgb, var(--accent) 12%, transparent); }
   .rename { flex: 1; min-width: 0; padding: 4px 4px 4px 0; }
   .rename .input { width: 100%; min-height: 36px; padding: 4px 8px; }
   .twist { width: 24px; height: 36px; flex-shrink: 0; background: none; border: 0; color: var(--text-2); font-size: 16px; line-height: 1; padding: 0; }

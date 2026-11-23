@@ -89,10 +89,66 @@ func (l *Library) abs(rel string) (string, error) {
 	return full, nil
 }
 
-// Folders lists every folder under the music dir (not the root itself), as
-// sorted relative paths. Empty folders are included: a folder made for an
-// upload that hasn't happened yet is still a place to put things.
-func (l *Library) Folders() ([]string, error) {
+// Folders lists every folder under the music dir (not the root itself) as
+// relative paths, depth-first with each folder's children in their saved
+// order (see orderFolders). Empty folders are included: a folder made for
+// an upload that hasn't happened yet is still a place to put things.
+func (l *Library) Folders(ctx context.Context) ([]string, error) {
+	out, err := l.walkFolders()
+	if err != nil {
+		return out, err
+	}
+	pos, err := db.DJFolderOrder(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return orderFolders(out, pos), nil
+}
+
+// orderFolders arranges paths as a tree walk: parents before children,
+// siblings by saved position, then alphabetically (case-insensitive) for
+// folders that have no position yet (new, or made outside the page).
+func orderFolders(paths []string, pos map[string]int) []string {
+	kids := map[string][]string{}
+	for _, p := range paths {
+		kids[path.Dir(p)] = append(kids[path.Dir(p)], p) // path.Dir("a") == "."
+	}
+	less := func(a, b string) bool {
+		pa, oka := pos[a]
+		pb, okb := pos[b]
+		if oka != okb {
+			return oka
+		}
+		if oka && pa != pb {
+			return pa < pb
+		}
+		return strings.ToLower(path.Base(a)) < strings.ToLower(path.Base(b))
+	}
+	out := make([]string, 0, len(paths))
+	var walk func(parent string)
+	walk = func(parent string) {
+		c := kids[parent]
+		sort.SliceStable(c, func(i, j int) bool { return less(c[i], c[j]) })
+		for _, p := range c {
+			out = append(out, p)
+			walk(p)
+		}
+	}
+	walk(".")
+	return out
+}
+
+// SetFolderOrder saves the order of sibling folders (all must share a parent).
+func (l *Library) SetFolderOrder(ctx context.Context, paths []string) error {
+	for _, p := range paths {
+		if p == "" || path.Dir(p) != path.Dir(paths[0]) {
+			return errors.New("folders to order must be siblings")
+		}
+	}
+	return db.SetDJFolderOrder(ctx, paths)
+}
+
+func (l *Library) walkFolders() ([]string, error) {
 	if err := os.MkdirAll(l.musicDir, 0o755); err != nil {
 		return nil, err
 	}
@@ -230,6 +286,11 @@ func (l *Library) DeleteFolder(ctx context.Context, rel string) error {
 	// next scan re-adds whatever is still on disk.
 	if err := db.DeleteDJTracksUnder(ctx, rel); err != nil {
 		return err
+	}
+	if rmErr == nil {
+		if err := db.DeleteDJFolderOrderUnder(ctx, rel); err != nil {
+			return err
+		}
 	}
 	if rmErr != nil {
 		return friendlyRemoveErr(rmErr)

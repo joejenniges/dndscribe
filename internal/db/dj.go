@@ -76,6 +76,12 @@ func migrateDJ(ctx context.Context) error {
 		`ALTER TABLE dj_scenes ADD COLUMN IF NOT EXISTS image_key TEXT`,
 		`DROP TABLE IF EXISTS dj_playlist_tracks`,
 		`DROP TABLE IF EXISTS dj_playlists`,
+		// Custom order of folders among their siblings (drag to rearrange).
+		// Folders without a row sort alphabetically after the ordered ones.
+		`CREATE TABLE IF NOT EXISTS dj_folder_order (
+			path TEXT PRIMARY KEY,
+			position INT NOT NULL
+		)`,
 	}
 	for _, s := range stmts {
 		if _, err := pool.Exec(ctx, s); err != nil {
@@ -167,6 +173,17 @@ func RenameDJFolder(ctx context.Context, from, to string) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// Order rows: clear any stale ones at the target (a folder deleted
+	// earlier), then carry the moved folder's rows over.
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM dj_folder_order WHERE path = $1 OR starts_with(path, $1 || '/')`, to); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE dj_folder_order SET path = $2 || substr(path, length($1) + 1)
+		WHERE path = $1 OR starts_with(path, $1 || '/')`, from, to); err != nil {
+		return err
+	}
 	// substr/length count characters on both sides, so multi-byte names are fine.
 	if _, err := tx.Exec(ctx, `
 		UPDATE dj_tracks SET path = $2 || substr(path, length($1) + 1)
@@ -183,6 +200,48 @@ func RenameDJFolder(ctx context.Context, from, to string) error {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// DJFolderOrder returns the saved sibling position of each ordered folder.
+func DJFolderOrder(ctx context.Context) (map[string]int, error) {
+	rows, err := pool.Query(ctx, `SELECT path, position FROM dj_folder_order`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var p string
+		var n int
+		if err := rows.Scan(&p, &n); err != nil {
+			return nil, err
+		}
+		out[p] = n
+	}
+	return out, rows.Err()
+}
+
+// SetDJFolderOrder saves paths (siblings) in the given order.
+func SetDJFolderOrder(ctx context.Context, paths []string) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	for i, p := range paths {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO dj_folder_order (path, position) VALUES ($1, $2)
+			ON CONFLICT (path) DO UPDATE SET position = EXCLUDED.position`, p, i); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// DeleteDJFolderOrderUnder drops order rows for a deleted folder and its sub-folders.
+func DeleteDJFolderOrderUnder(ctx context.Context, folder string) error {
+	_, err := pool.Exec(ctx, `DELETE FROM dj_folder_order WHERE path = $1 OR starts_with(path, $1 || '/')`, folder)
+	return err
 }
 
 // ---- Scenes ----

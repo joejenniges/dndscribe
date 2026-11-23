@@ -212,7 +212,7 @@ func NewHandler(engine *Engine, library *Library, sb *Soundboard, waves *Wavefor
 	// Folders. Each folder under the music dir is a playlist; scenes pick
 	// folders. Paths are music-dir-relative with forward slashes.
 	m.HandleFunc("GET /api/dj/folders", func(w http.ResponseWriter, r *http.Request) {
-		folders, err := h.library.Folders()
+		folders, err := h.library.Folders(r.Context())
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -237,6 +237,30 @@ func NewHandler(engine *Engine, library *Library, sb *Soundboard, waves *Wavefor
 		}
 		h.changed()
 		writeJSON(w, http.StatusCreated, map[string]string{"path": rel})
+	})
+	m.HandleFunc("PUT /api/dj/folders/order", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Paths []string `json:"paths"`
+		}
+		if err := readBody(r, &body); err != nil || len(body.Paths) == 0 {
+			writeErr(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		paths := make([]string, len(body.Paths))
+		for i, p := range body.Paths {
+			rel, err := CleanRelPath(p)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			paths[i] = rel
+		}
+		if err := h.library.SetFolderOrder(r.Context(), paths); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		h.changed()
+		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 	})
 	m.HandleFunc("POST /api/dj/folders/rename", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {

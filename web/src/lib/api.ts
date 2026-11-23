@@ -285,6 +285,9 @@ export const dj = {
     list: () => request<string[]>('/api/dj/folders'),
     create: (path: string) => post<{ path: string }>('/api/dj/folders', { path }),
     rename: (from: string, to: string) => post<{ path: string }>('/api/dj/folders/rename', { from, to }),
+    /** Save the order of sibling folders. */
+    order: (paths: string[]) =>
+      request<{ success: boolean }>('/api/dj/folders/order', { method: 'PUT', body: JSON.stringify({ paths }) }),
     delete: (path: string) =>
       request<{ success: boolean }>(`/api/dj/folders?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
   },

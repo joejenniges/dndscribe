@@ -60,7 +60,7 @@ func TestFoldersAndInFolder(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := NewLibrary("ffmpeg", dir).Folders()
+	got, err := NewLibrary("ffmpeg", dir).walkFolders() // the DB-free part of Folders
 	if err != nil {
 		t.Fatal(err)
 	}
