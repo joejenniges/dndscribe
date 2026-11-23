@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -222,12 +223,13 @@ func GetDJAnalysis(ctx context.Context, trackID int64, size int64, mtime time.Ti
 	if err != nil {
 		return nil, err
 	}
+	// REAL storage: round off float32 noise (138.1 reads back as 138.10000610).
 	if bpm != nil {
-		v := float64(*bpm)
+		v := math.Round(float64(*bpm)*100) / 100
 		a.BPM = &v
 	}
 	if conf != nil {
-		v := float64(*conf)
+		v := math.Round(float64(*conf)*1000) / 1000
 		a.Confidence = &v
 	}
 	a.Beats = decodeBeats(beats)

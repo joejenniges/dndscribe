@@ -29,6 +29,8 @@ type Handler struct {
 	// OnCuesChanged is called after a track's hotcues or gotos change, so
 	// clients showing that track refetch its cues.
 	OnCuesChanged func(trackID int64)
+	// Beats runs beat analysis (set up in main; nil = unavailable).
+	Beats *Analyzer
 
 	changeMu    sync.Mutex
 	changeTimer *time.Timer
@@ -482,6 +484,9 @@ func (h *Handler) changed() {
 	// New or replaced tracks get their waveforms worked out now rather than
 	// when first played. Cheap when there's nothing to do.
 	h.waves.Fill(context.Background())
+	if h.Beats != nil {
+		h.Beats.Fill(context.Background())
+	}
 }
 
 type djSettings struct {

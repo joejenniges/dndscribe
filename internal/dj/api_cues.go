@@ -3,6 +3,7 @@ package dj
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -24,6 +25,12 @@ import (
 //	POST   /api/dj/tracks/{id}/gotos            {positionMs, targetSlot, enabled, label}
 //	PUT    /api/dj/tracks/{id}/gotos/{gid}      same body
 //	DELETE /api/dj/tracks/{id}/gotos/{gid}
+//
+// Beat analysis (beats.go):
+//
+//	GET    /api/dj/tracks/{id}/analysis   (queues it if missing or stale)
+//	POST   /api/dj/tracks/{id}/analysis   re-analyse (discards a manual grid)
+//	PATCH  /api/dj/tracks/{id}/analysis   {op: half|double|shift|grid|off, ...}
 
 func (h *Handler) mountCues() {
 	m := h.mux
@@ -38,6 +45,82 @@ func (h *Handler) mountCues() {
 			return
 		}
 		writeJSON(w, http.StatusOK, c)
+	})
+
+	m.HandleFunc("GET /api/dj/tracks/{id}/analysis", func(w http.ResponseWriter, r *http.Request) {
+		t, ok := h.cueTrack(w, r)
+		if !ok {
+			return
+		}
+		a, err := db.GetDJAnalysis(r.Context(), t.ID, t.SizeBytes, t.ModTime)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		stale := a == nil || !a.Current || (a.Source != "manual" && a.Version < beatAlgoVersion)
+		if stale && h.Beats != nil && (a == nil || (a.Status != "pending" && a.Status != "running")) {
+			// Someone's looking at it: analyse it next.
+			h.Beats.Enqueue(r.Context(), *t, true)
+			a, _ = db.GetDJAnalysis(r.Context(), t.ID, t.SizeBytes, t.ModTime)
+		}
+		if a == nil {
+			a = &db.DJAnalysis{TrackID: t.ID, Status: "none", Source: "none", Beats: []int64{}}
+		}
+		writeJSON(w, http.StatusOK, analysisReply(a))
+	})
+	m.HandleFunc("POST /api/dj/tracks/{id}/analysis", func(w http.ResponseWriter, r *http.Request) {
+		t, ok := h.cueTrack(w, r)
+		if !ok {
+			return
+		}
+		if h.Beats == nil {
+			writeErr(w, http.StatusServiceUnavailable, "beat analysis is not available")
+			return
+		}
+		h.Beats.Enqueue(r.Context(), *t, true)
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "pending"})
+	})
+	m.HandleFunc("PATCH /api/dj/tracks/{id}/analysis", func(w http.ResponseWriter, r *http.Request) {
+		t, ok := h.cueTrack(w, r)
+		if !ok {
+			return
+		}
+		var e GridEdit
+		if err := readBody(r, &e); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		cur, err := db.GetDJAnalysis(r.Context(), t.ID, t.SizeBytes, t.ModTime)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		var beats []int64
+		if cur != nil && cur.Current {
+			beats = cur.Beats
+		}
+		out, err := applyGridEdit(beats, e, t.DurationMs)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a := db.DJAnalysis{TrackID: t.ID, Version: beatAlgoVersion, Status: "ready", Source: "manual", Beats: out}
+		if e.Op == "off" {
+			a.Status, a.Error = "unavailable", "beat grid turned off"
+		} else if len(out) >= 2 {
+			bpm := math.Round(60000*float64(len(out)-1)/float64(out[len(out)-1]-out[0])*100) / 100
+			one := 1.0
+			a.BPM, a.Confidence = &bpm, &one
+		}
+		if err := db.SaveDJAnalysis(r.Context(), t.SizeBytes, t.ModTime, a); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if h.Beats != nil {
+			h.Beats.changed(t.ID)
+		}
+		a.Current = true
+		writeJSON(w, http.StatusOK, analysisReply(&a))
 	})
 
 	m.HandleFunc("PUT /api/dj/tracks/{id}/hotcues/{slot}", func(w http.ResponseWriter, r *http.Request) {
@@ -241,6 +324,22 @@ func (h *Handler) toggleGoto(ctx context.Context, trackID, gotoID int64, on bool
 	}
 	_, err = h.reloadCues(ctx, trackID)
 	return err
+}
+
+// analysisReply adds what the UI needs to decide how to show a grid.
+func analysisReply(a *db.DJAnalysis) map[string]any {
+	if a.Beats == nil {
+		a.Beats = []int64{}
+	}
+	usable := a.Status == "ready" && len(a.Beats) > 0 &&
+		(a.Source == "manual" || (a.Confidence != nil && *a.Confidence >= BeatConfidenceOK))
+	return map[string]any{
+		"trackId": a.TrackID, "status": a.Status, "source": a.Source, "bpm": a.BPM,
+		"confidence": a.Confidence, "beats": a.Beats, "error": a.Error, "current": a.Current,
+		"version": a.Version, "analyzedAt": a.AnalyzedAt,
+		// usable: confident (or hand-made) enough to snap to and draw.
+		"usable": usable, "confidenceThreshold": BeatConfidenceOK,
+	}
 }
 
 func clip(s string, n int) string {

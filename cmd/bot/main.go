@@ -138,6 +138,11 @@ func main() {
 	djHandler.OnCuesChanged = func(trackID int64) {
 		hub.Broadcast(map[string]interface{}{"type": "dj_cues", "trackId": trackID}, nil)
 	}
+	djBeats := dj.NewAnalyzer(cfg.DJ.FFmpeg, cfg.DJ.MusicDir)
+	djBeats.OnChanged = func(trackID int64) {
+		hub.Broadcast(map[string]interface{}{"type": "dj_analysis", "trackId": trackID}, nil)
+	}
+	djHandler.Beats = djBeats
 	djEngine.SetCueLoader(db.GetDJTrackCues)
 	djCtx, djCancel := context.WithCancel(context.Background())
 	defer djCancel()
@@ -149,6 +154,7 @@ func main() {
 		}
 		hub.Broadcast(map[string]interface{}{"type": "dj_library"}, nil)
 		djWaves.Fill(djCtx)
+		djBeats.Fill(djCtx)
 	}()
 	go djSoundboard.Warm(djCtx)
 
