@@ -4,16 +4,22 @@
   // and draws its own beat grid; the two are never shown as aligned or
   // synced, since nothing here beatmatches.
   //
-  // Local to this device: zoom (seconds across the lane) and a pan offset
-  // (drag the waveform; "Back to playhead" returns). Pan moves the view, not
-  // the music. Markers can be dragged (snapped to beats unless Shift is
-  // held; saved once on release), and right click or a long press opens the
-  // cue menu at that time.
+  // Dragging a lane scrubs that deck only: the playhead stays in the middle
+  // and the waveform moves under it, like pushing a record. The decks are
+  // independent, so the other lane never moves. The lane follows the
+  // pointer locally and one seek is sent on release (each seek restarts the
+  // server's decoder, so audio doesn't scrub live while dragging).
+  //
+  // Local to this device: zoom (seconds across the lane). Markers can be
+  // dragged (snapped to beats unless Shift is held; saved once on release),
+  // and right click or a long press opens the cue menu at that time.
   //
   // Positions are extrapolated locally from the server's snapshots (with a
   // short easing when a snapshot disagrees); beat grids and waveforms are
   // fetched once per track over HTTP and cached.
   import { onMount } from 'svelte';
+  import { djCmd } from '$lib/dj/control';
+  import { addToast } from '$lib/stores/toast';
   import { deckPosition, DECK_NAMES } from '$lib/dj/live';
   import { waveCache } from './wavecache';
   import { cueMenu, snapMs, loadAnalysis, gridVersion, analysisLabel, fmtCue, moveMarker, longPress, gotoName } from '$lib/dj/cues';
@@ -40,8 +46,8 @@
       /* not remembered */
     }
   });
-  /** View offset from the playheads, ms (local; positive = looking ahead). */
-  let panMs = $state(0);
+  /** Per lane: where a scrub drag has the deck (ms), until its seek lands. */
+  let scrub = $state<[number | null, number | null]>([null, null]);
 
   type Lane = {
     wave: DjWaveform | null;
@@ -112,7 +118,7 @@
   let canvases: [HTMLCanvasElement | undefined, HTMLCanvasElement | undefined] = $state([undefined, undefined]);
   let rootEl: HTMLElement | undefined = $state();
   type Drag =
-    | { kind: 'pan'; lane: 0 | 1; x0: number; pan0: number; moved: boolean }
+    | { kind: 'scrub'; lane: 0 | 1; x0: number; pos0: number; moved: boolean }
     | { kind: 'marker'; lane: 0 | 1; ref: MarkerRef; x0: number; ms0: number; ms: number; moved: boolean };
   let drag = $state<Drag | null>(null);
   const shown = [0, 0];
@@ -121,11 +127,11 @@
   /** Track time under css x on lane i. */
   function timeAt(i: 0 | 1, x: number): number {
     const c = canvases[i]!;
-    return shown[i] + panMs + (x - c.clientWidth / 2) / pxPerMs(c);
+    return shown[i] + (x - c.clientWidth / 2) / pxPerMs(c);
   }
   function xOfCss(i: 0 | 1, ms: number): number {
     const c = canvases[i]!;
-    return c.clientWidth / 2 + (ms - shown[i] - panMs) * pxPerMs(c);
+    return c.clientWidth / 2 + (ms - shown[i]) * pxPerMs(c);
   }
 
   function hasTrack(i: 0 | 1) {
@@ -160,8 +166,8 @@
     if (m) {
       const ms = refMs(m, d.hotcues, d.gotos);
       drag = { kind: 'marker', lane: i, ref: m, x0: e.clientX, ms0: ms, ms, moved: false };
-    } else {
-      drag = { kind: 'pan', lane: i, x0: e.clientX, pan0: panMs, moved: false };
+    } else if (live && !d.loading && d.track!.durationMs > 0) {
+      drag = { kind: 'scrub', lane: i, x0: e.clientX, pos0: shown[i], moved: false };
     }
   }
   function onMove(e: PointerEvent) {
@@ -175,8 +181,10 @@
     }
     if (!dr.moved) return;
     const c = canvases[dr.lane]!;
-    if (dr.kind === 'pan') {
-      panMs = dr.pan0 - dx / pxPerMs(c);
+    if (dr.kind === 'scrub') {
+      // Dragging left pulls later audio under the playhead.
+      const dur = st?.decks?.[dr.lane]?.track?.durationMs ?? 0;
+      scrub[dr.lane] = Math.max(0, Math.min(dur, dr.pos0 - dx / pxPerMs(c)));
     } else {
       const dur = st?.decks?.[dr.lane]?.track?.durationMs ?? 0;
       let ms = dr.ms0 + dx / pxPerMs(c);
@@ -192,11 +200,27 @@
     if (dr?.kind === 'marker' && dr.moved) {
       const d = st?.decks?.[dr.lane];
       if (d?.track) moveMarker(d.track.id, dr.ref, dr.ms, d.hotcues, d.gotos);
+    } else if (dr?.kind === 'scrub' && dr.moved && scrub[dr.lane] !== null) {
+      seek(dr.lane, scrub[dr.lane]!);
     }
     dirty++;
   }
+
+  async function seek(i: 0 | 1, ms: number) {
+    try {
+      await djCmd('deck.seek', { deck: i, positionMs: Math.round(ms) });
+    } catch (e) {
+      addToast(`Couldn't seek deck ${DECK_NAMES[i]}: ${(e as Error).message}`, 'error');
+    } finally {
+      // Hand back to the server's position; lastShown is the scrubbed spot,
+      // so any small difference eases out instead of jumping.
+      if (drag?.lane !== i) scrub[i] = null;
+      dirty++;
+    }
+  }
   function onCancel() {
     lp.cancel();
+    if (drag?.kind === 'scrub') scrub[drag.lane] = null;
     drag = null;
     dirty++;
   }
@@ -269,8 +293,7 @@
     const d = st?.decks?.[i];
     const L = lanes[i];
     const pxPerSec = W / zoom;
-    const viewCenter = pos + panMs;
-    const t0 = viewCenter / 1000 - zoom / 2; // seconds at x=0
+    const t0 = pos / 1000 - zoom / 2; // seconds at x=0; the playhead is the middle
     const xOf = (ms: number) => (ms / 1000 - t0) * pxPerSec;
     const head = Math.round(xOf(pos));
     g.fillStyle = colors.line;
@@ -331,10 +354,12 @@
         const dur = st?.decks?.[i]?.track?.durationMs ?? 0;
         let p = Math.max(0, deckPosition(st, i, now) + L.corr);
         if (dur > 0) p = Math.min(p, dur);
+        const sc = scrub[i];
+        if (sc !== null) p = sc;
         L.lastShown = p;
         shown[i] = p;
       }
-      const key = `${Math.round(shown[0])}|${Math.round(shown[1])}|${dirty}|${zoom}|${panMs}|${canvases[0]?.clientWidth}|${JSON.stringify(st?.decks?.map((d) => [d.hotcues, d.gotos]))}`;
+      const key = `${Math.round(shown[0])}|${Math.round(shown[1])}|${dirty}|${zoom}|${scrub[0]}|${scrub[1]}|${canvases[0]?.clientWidth}|${JSON.stringify(st?.decks?.map((d) => [d.hotcues, d.gotos]))}`;
       if (!running && key === lastKey) return;
       lastKey = key;
       drawLane(0, shown[0]);
@@ -373,9 +398,6 @@
     </div>
   {/each}
   <div class="tools" role="group" aria-label="Waveform zoom">
-    {#if Math.abs(panMs) > 1}
-      <button class="btn btn-sm" onclick={() => { panMs = 0; dirty++; }} title="Back to the playhead">⟲ Playhead</button>
-    {/if}
     <button class="btn btn-sm icon" onclick={() => zoomBy(-1)} disabled={zoom === ZOOMS[0]} aria-label="Zoom in" title="Zoom in (Ctrl + wheel)">+</button>
     <span class="zoom tiny">{zoom}s</span>
     <button class="btn btn-sm icon" onclick={() => zoomBy(1)} disabled={zoom === ZOOMS[ZOOMS.length - 1]} aria-label="Zoom out" title="Zoom out (Ctrl + wheel)">−</button>
