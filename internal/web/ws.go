@@ -13,14 +13,14 @@ import (
 	"github.com/joe/dndscribe-go/internal/db"
 )
 
-var upgrader = websocket.Upgrader{CheckOrigin: checkOrigin}
+var upgrader = websocket.Upgrader{CheckOrigin: CheckOrigin}
 
-// checkOrigin accepts the app's own pages (whatever host they were opened
+// CheckOrigin accepts the app's own pages (whatever host they were opened
 // on: localhost, a LAN IP, the Tailscale name) and the Vite dev server on
 // localhost. It refuses other websites, which could otherwise drive the DJ
 // and read transcripts from a browser on the same network. There is no auth;
 // this is the one cheap guard against cross-site WebSocket use.
-func checkOrigin(r *http.Request) bool {
+func CheckOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return true // not a browser

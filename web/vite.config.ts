@@ -11,7 +11,8 @@ export default defineConfig(({ mode }) => {
     plugins: [sveltekit()],
     server: {
       proxy: {
-        '/api': backend,
+        // ws: /api/dj/listen (test channel audio) is a WebSocket.
+        '/api': { target: backend, ws: true },
         '/recordings': backend,
         '/ws': {
           target: backend.replace(/^http/, 'ws'),

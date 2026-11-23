@@ -38,6 +38,11 @@ type Handler struct {
 		TestChannelEnabled() bool
 		SetTestChannelEnabled(bool)
 	}
+
+	// Listen subscribes to the test channel's audio (TestOutput.Listen);
+	// CheckOrigin is the app's WebSocket origin check. Both set in main.
+	Listen      func() (<-chan []byte, func())
+	CheckOrigin func(*http.Request) bool
 }
 
 // maxUploadBytes caps one uploaded file. Generous: an hour-long FLAC
@@ -458,6 +463,7 @@ func NewHandler(engine *Engine, library *Library, sb *Soundboard, waves *Wavefor
 	})
 
 	h.mountSoundboard()
+	m.HandleFunc("GET /api/dj/listen", h.listen)
 	return h
 }
 

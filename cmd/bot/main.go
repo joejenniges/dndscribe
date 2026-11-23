@@ -104,15 +104,17 @@ func main() {
 		log.Printf("DJ: read saved crossfade: %v", err)
 	}
 	// The test channel (Settings page) stands in for Discord voice: while the
-	// bot is in it, the mixer runs into an output that discards the audio.
+	// bot is in it, the mixer's output goes to browsers that chose to listen
+	// (/api/dj/listen) instead of Discord.
 	var testChannel bool
 	if _, err := db.GetSetting(context.Background(), db.SettingDJTestChannel, &testChannel); err != nil {
 		log.Printf("DJ: read test channel setting: %v", err)
 	}
 	b.SetTestChannelEnabled(testChannel)
+	djTest := &dj.TestOutput{}
 	djOut := &dj.SwitchOutput{
 		Real:    &dj.VoiceOutput{Conn: b.VoiceConnection},
-		Test:    &dj.NullOutput{},
+		Test:    djTest,
 		UseTest: b.InTestChannel,
 	}
 	djEngine := dj.NewEngine(cfg.DJ.FFmpeg, cfg.DJ.MusicDir, djOut, enc, cfg.DJ.Volume, djFade)
@@ -127,6 +129,8 @@ func main() {
 	djWaves := dj.NewWaveforms(cfg.DJ.FFmpeg, cfg.DJ.MusicDir)
 	djHandler := dj.NewHandler(djEngine, djLibrary, djSoundboard, djWaves)
 	djHandler.TestChannel = b
+	djHandler.Listen = djTest.Listen
+	djHandler.CheckOrigin = web.CheckOrigin
 	hub.Handle("dj.", djHandler.HandleWS)
 	djHandler.OnLibraryChanged = func() {
 		hub.Broadcast(map[string]interface{}{"type": "dj_library"}, nil)

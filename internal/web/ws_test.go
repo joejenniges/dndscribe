@@ -96,7 +96,7 @@ func TestCheckOrigin(t *testing.T) {
 		if c.origin != "" {
 			r.Header.Set("Origin", c.origin)
 		}
-		if got := checkOrigin(r); got != c.want {
+		if got := CheckOrigin(r); got != c.want {
 			t.Errorf("origin %q host %q: %v, want %v", c.origin, c.host, got, c.want)
 		}
 	}

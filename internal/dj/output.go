@@ -88,19 +88,31 @@ func (o *VoiceOutput) SetSpeaking(on bool) {
 	_ = vc.Speaking(on)
 }
 
-// NullOutput stands in for a voice connection when the bot is in the test
-// channel: it accepts frames and drains them at the real 20ms rate, so the
+// TestOutput stands in for a voice connection when the bot is in the test
+// channel. It accepts frames and drains them at the real 20ms rate, so the
 // mixer runs at normal speed (positions, fades and Auto DJ timing behave as
-// in Discord) but the audio goes nowhere.
-type NullOutput struct {
-	mu     sync.Mutex
-	queued int
-	last   time.Time
+// in Discord), and copies every accepted frame to the browsers listening on
+// /api/dj/listen. With no listeners the audio goes nowhere.
+//
+// WHY the pacing stays here and not in the browser: the engine's clock is
+// "keep targetQueue frames queued"; something has to drain the queue in
+// real time whether or not anyone is listening, or the mixer would run
+// flat out. Browsers just play what they're sent, with their own small
+// jitter buffer.
+type TestOutput struct {
+	mu        sync.Mutex
+	queued    int
+	last      time.Time
+	listeners map[chan []byte]struct{}
 }
 
-const nullOutputCap = 16 // same depth as discordgo's OpusSend
+const testOutputCap = 16 // same depth as discordgo's OpusSend
 
-func (o *NullOutput) drainLocked() {
+// listenerBuffer: frames a slow listener can fall behind before frames are
+// dropped for it (1s). Dropping never slows the mixer or other listeners.
+const listenerBuffer = 50
+
+func (o *TestOutput) drainLocked() {
 	now := time.Now()
 	if o.last.IsZero() {
 		o.last = now
@@ -113,27 +125,50 @@ func (o *NullOutput) drainLocked() {
 	}
 }
 
-func (o *NullOutput) Ready() bool { return true }
+func (o *TestOutput) Ready() bool { return true }
 
-func (o *NullOutput) Queued() int {
+func (o *TestOutput) Queued() int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.drainLocked()
 	return o.queued
 }
 
-func (o *NullOutput) Send([]byte) bool {
+func (o *TestOutput) Send(frame []byte) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.drainLocked()
-	if o.queued >= nullOutputCap {
+	if o.queued >= testOutputCap {
 		return false
 	}
 	o.queued++
+	for ch := range o.listeners {
+		select {
+		case ch <- frame:
+		default: // listener behind; it resyncs on its side
+		}
+	}
 	return true
 }
 
-func (o *NullOutput) SetSpeaking(bool) {}
+func (o *TestOutput) SetSpeaking(bool) {}
+
+// Listen subscribes to the frames sent from now on. Call stop when done;
+// the channel is not closed.
+func (o *TestOutput) Listen() (frames <-chan []byte, stop func()) {
+	ch := make(chan []byte, listenerBuffer)
+	o.mu.Lock()
+	if o.listeners == nil {
+		o.listeners = map[chan []byte]struct{}{}
+	}
+	o.listeners[ch] = struct{}{}
+	o.mu.Unlock()
+	return ch, func() {
+		o.mu.Lock()
+		delete(o.listeners, ch)
+		o.mu.Unlock()
+	}
+}
 
 // SwitchOutput sends to Test while UseTest reports true, otherwise to Real.
 // Checked on every call, like VoiceOutput's connection lookup, so joining or

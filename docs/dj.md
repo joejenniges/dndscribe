@@ -128,7 +128,9 @@ There is no login: the app is meant for a home LAN or a Tailscale tailnet. Don't
 
 ## Test channel
 
-Settings page toggle (`testChannel` in `/api/dj/settings`, saved as `dj.test_channel`). When on, "Test channel (no Discord)" (id `test-channel`) is listed last among the voice channels. Joining it for music never touches Discord: the bot's status reports it as a music-only channel and the engine's `SwitchOutput` sends to a `NullOutput`, which drains frames at the real 20 ms rate, so decks, fades, Auto DJ and effects advance in real time but the audio is discarded. Recording in it is refused. Joining a real channel, starting a recording, or switching the setting off leaves it.
+Settings page toggle (`testChannel` in `/api/dj/settings`, saved as `dj.test_channel`). When on, "Test channel (no Discord)" (id `test-channel`) is listed last among the voice channels. Joining it never touches Discord: the bot's status reports it as a music-only channel and the engine's `SwitchOutput` sends to a `TestOutput`, which drains frames at the real 20 ms rate (so decks, fades, Auto DJ and effects advance in real time) and copies each frame to any browser listening. Recording in it is refused. Joining a real channel, starting a recording, or switching the setting off leaves it.
+
+The audio plays in the browser. `GET /api/dj/listen` is a WebSocket that sends one binary message per 20 ms Opus frame (48 kHz stereo, what Discord would get); a listener that falls more than a second behind has frames dropped rather than slowing the mixer. `web/src/lib/dj/listen.ts` decodes them with `opus-decoder` (WASM; WebCodecs is only available on https/localhost, and tablets use plain http on the LAN) and schedules them in Web Audio with a 120 ms jitter buffer, dropping frames when more than 350 ms is queued so latency can't creep. Listening is per device ("Listen here" next to Leave, remembered in localStorage as `dj.listen`) so two devices in one room don't echo; joining the test channel from a device turns it on there. After a reload, a remembered "on" waits for the first tap or key press if the browser blocks autoplay ("Tap to hear").
 
 ## Deck play and the crossfader
 
