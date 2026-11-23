@@ -229,6 +229,9 @@ func runMigrations(ctx context.Context) error {
 	if err := migrateWaveforms(ctx); err != nil {
 		return fmt.Errorf("waveform migration: %w", err)
 	}
+	if err := migrateCues(ctx); err != nil {
+		return fmt.Errorf("cue migration: %w", err)
+	}
 	if err := migrateSettings(ctx); err != nil {
 		return fmt.Errorf("settings migration: %w", err)
 	}

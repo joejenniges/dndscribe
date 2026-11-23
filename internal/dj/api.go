@@ -26,6 +26,9 @@ type Handler struct {
 	// OnLibraryChanged is called after tracks, folders or scenes change so
 	// other open clients (the table monitor, a tablet) can refetch.
 	OnLibraryChanged func()
+	// OnCuesChanged is called after a track's hotcues or gotos change, so
+	// clients showing that track refetch its cues.
+	OnCuesChanged func(trackID int64)
 
 	changeMu    sync.Mutex
 	changeTimer *time.Timer
@@ -463,6 +466,7 @@ func NewHandler(engine *Engine, library *Library, sb *Soundboard, waves *Wavefor
 	})
 
 	h.mountSoundboard()
+	h.mountCues()
 	m.HandleFunc("GET /api/dj/listen", h.listen)
 	return h
 }

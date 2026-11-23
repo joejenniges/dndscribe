@@ -104,6 +104,7 @@ func (q *queue) clear() {
 // ffmpeg start never stalls the mixer. A later call supersedes an earlier
 // one still in progress (latest command wins).
 func (e *Engine) startNow(it item, fadeSeconds float64, kind string) error {
+	e.ensureCues(&it)
 	src, err := it.open()
 	if err != nil {
 		return fmt.Errorf("can't play %s: %w", it.label, err)
@@ -535,6 +536,18 @@ type DeckState struct {
 	Loading    bool       `json:"loading"`
 	Auto       bool       `json:"auto"` // loaded by Auto DJ / a scene, not by hand
 	Error      string     `json:"error,omitempty"`
+
+	// The loaded track's cues (a handful of entries; beat grids are not
+	// here, they're fetched over HTTP).
+	Hotcues  []db.DJHotcue `json:"hotcues"`
+	Gotos    []GotoState   `json:"gotos"`
+	LastJump *CueJump      `json:"lastJump,omitempty"`
+}
+
+// GotoState is a goto definition plus why it can't fire, if it can't.
+type GotoState struct {
+	db.DJGoto
+	Problem string `json:"problem,omitempty"` // "target missing", "too close to its target", ...
 }
 
 // Transition describes an automated crossfader move so clients can animate
@@ -626,12 +639,20 @@ func (e *Engine) State() State {
 		UpNext:      []TrackInfo{},
 	}
 	for i, d := range e.decks {
-		ds := DeckState{Playing: d.playing, Gain: d.gain, Loading: d.loading, Auto: d.auto, Error: d.err}
+		ds := DeckState{Playing: d.playing, Gain: d.gain, Loading: d.loading, Auto: d.auto, Error: d.err,
+			Hotcues: []db.DJHotcue{}, Gotos: []GotoState{}}
 		if d.v != nil {
 			ti := itemInfo(d.v.item)
 			ds.Track = &ti
 			ds.PositionMs = d.v.framesPlayed * FrameMs
 			ds.Ended = d.v.done
+			if c := e.deckCuesLocked(d); c != nil {
+				ds.Hotcues = append(ds.Hotcues, c.Hotcues...)
+				for _, g := range c.Gotos {
+					ds.Gotos = append(ds.Gotos, GotoState{DJGoto: g, Problem: gotoProblem(c, g, d.v.item.durationMs())})
+				}
+			}
+			ds.LastJump = d.lastJump
 		}
 		st.Decks[i] = ds
 	}

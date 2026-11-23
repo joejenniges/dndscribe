@@ -38,6 +38,12 @@ type deck struct {
 
 	err  string
 	peak float64 // meter accumulator
+
+	// Goto runtime (cues.go): decoder pre-opened at the next goto's
+	// target, frames left before a goto may fire again, last jump.
+	prep     *prepared
+	gotoHold int
+	lastJump *CueJump
 }
 
 const defaultRunStep = 1.0 / 10 // 200ms play/pause ramp
@@ -56,6 +62,10 @@ func deckName(i int) string { return string(rune('A' + i)) }
 func (e *Engine) mixDeck(d *deck, acc []float64) bool {
 	var tmp [FrameLen]float64
 	contributed := false
+	// Tails that exist before this frame. A goto jump during this frame
+	// turns the current voice into a tail after it has already been mixed;
+	// it must not be mixed a second time in the same frame.
+	preTails := len(d.tails)
 
 	target := 0.0
 	if d.playing {
@@ -78,7 +88,16 @@ func (e *Engine) mixDeck(d *deck, acc []float64) bool {
 		if d.v.item != nil && d.v.item.scale > 0 {
 			scale = d.v.item.scale
 		}
+		p0 := d.v.framesPlayed
+		cur := d.v
 		contributed = mixVoice(d.v, tmp[:], scale)
+		if cur.framesPlayed > p0 {
+			// Goto crossing, on this frame's own clock. A jump swaps d.v;
+			// the old voice (this frame's audio) fades out as a tail from
+			// the next frame.
+			e.checkGotoLocked(d, p0)
+		}
+		e.ensurePrepLocked(d)
 		if d.v.done && d.playing {
 			d.playing = false
 			r1 = 0
@@ -86,7 +105,11 @@ func (e *Engine) mixDeck(d *deck, acc []float64) bool {
 		}
 	}
 	kept := d.tails[:0]
-	for _, t := range d.tails {
+	for ti, t := range d.tails {
+		if ti >= preTails {
+			kept = append(kept, t) // added this frame; mixed from the next
+			continue
+		}
 		scale := 1.0
 		if t.item != nil && t.item.scale > 0 {
 			scale = t.item.scale
@@ -326,6 +349,9 @@ func (e *Engine) replaceLocked(d *deck, it *item, src Source) {
 	d.v = &voice{src: src, item: it, env: env}
 	d.err = ""
 	d.ejectWhenSilent = false
+	d.dropPrep()
+	d.gotoHold = 0
+	d.lastJump = nil
 }
 
 // ejectLocked unloads deck d.
@@ -339,6 +365,9 @@ func (e *Engine) ejectLocked(d *deck) {
 		t.src.Close()
 	}
 	d.tails = nil
+	d.dropPrep()
+	d.gotoHold = 0
+	d.lastJump = nil
 	d.playing = false
 	d.run = 0
 	d.runStep = 0
@@ -359,6 +388,7 @@ func (e *Engine) cueAsyncLocked(i int, it item, playOnLoad bool) {
 	d.playOnLoad = playOnLoad
 	itp := &it
 	go func() {
+		e.ensureCues(itp)
 		src, err := itp.open()
 		e.mu.Lock()
 		defer e.mu.Unlock()
@@ -395,6 +425,7 @@ func (e *Engine) openOnDeck(i int, it *item) error {
 	e.notify()
 	e.mu.Unlock()
 
+	e.ensureCues(it)
 	src, err := it.open()
 
 	e.mu.Lock()

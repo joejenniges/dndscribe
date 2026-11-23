@@ -135,6 +135,10 @@ func main() {
 	djHandler.OnLibraryChanged = func() {
 		hub.Broadcast(map[string]interface{}{"type": "dj_library"}, nil)
 	}
+	djHandler.OnCuesChanged = func(trackID int64) {
+		hub.Broadcast(map[string]interface{}{"type": "dj_cues", "trackId": trackID}, nil)
+	}
+	djEngine.SetCueLoader(db.GetDJTrackCues)
 	djCtx, djCancel := context.WithCancel(context.Background())
 	defer djCancel()
 	go djEngine.Run(djCtx)

@@ -76,6 +76,10 @@ type Engine struct {
 
 	masterPeak float64 // meter accumulator, reset when read
 
+	// Hotcue and goto definitions per track id (cues.go).
+	cues      map[int64]*db.DJTrackCues
+	cueLoader CueLoader
+
 	rev      atomic.Int64 // bumped on every state change
 	notifyCh chan struct{}
 	OnState  func(State)
@@ -179,6 +183,7 @@ func NewEngine(ffmpegPath, musicDir string, out Output, enc Encoder, volume, fad
 		sfxGain:     1,
 		autoDJ:      true,
 		notifyCh:    make(chan struct{}, 1),
+		cues:        map[int64]*db.DJTrackCues{},
 	}
 	for i := range e.decks {
 		e.decks[i] = &deck{idx: i, gain: 1, curGain: 1}

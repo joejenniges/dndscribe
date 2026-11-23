@@ -118,6 +118,8 @@ func (h *Handler) runCommand(ctx context.Context, c wsCommand) error {
 		To         *int     `json:"to"`
 		Next       bool     `json:"next"`
 		Seconds    *float64 `json:"seconds"`
+		Slot       *int     `json:"slot"`
+		GotoID     *int64   `json:"gotoId"`
 	}
 	if len(c.Args) > 0 {
 		if err := json.Unmarshal(c.Args, &a); err != nil {
@@ -158,6 +160,16 @@ func (h *Handler) runCommand(ctx context.Context, c wsCommand) error {
 			return err
 		}
 		return e.SeekDeck(*a.Deck, *a.PositionMs)
+	case "deck.hotcue":
+		if err := need(a.Deck != nil && a.Slot != nil, "deck and slot"); err != nil {
+			return err
+		}
+		return e.HotcueDeck(*a.Deck, *a.Slot)
+	case "goto.toggle":
+		if err := need(a.TrackID != nil && a.GotoID != nil && a.On != nil, "trackId, gotoId and on"); err != nil {
+			return err
+		}
+		return h.toggleGoto(ctx, *a.TrackID, *a.GotoID, *a.On)
 	case "deck.gain":
 		if err := need(a.Deck != nil && a.Value != nil, "deck and value"); err != nil {
 			return err
