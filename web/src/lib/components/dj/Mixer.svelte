@@ -147,9 +147,24 @@
 
   /* Performance: one row. Crossfader | master | buttons. */
   .strip { flex-direction: row; align-items: center; gap: 18px; flex-wrap: wrap; padding: 8px 14px; }
-  .strip .xf { flex: 3 1 360px; }
+  .strip .xf { flex: 3 1 300px; }
   .strip .side { width: 52px; height: 52px; font-size: 18px; }
-  .strip .master { flex: 1 1 200px; }
+  .strip .master { flex: 1 1 140px; min-width: 140px; }
+  /* At mid widths (portrait tablet) stack Auto DJ over Next so crossfader,
+     master and actions share one row instead of the actions wrapping. */
+  .strip { container-type: inline-size; }
   .strip .actions { flex: 0 1 auto; flex-wrap: wrap; }
-  .strip .actions .btn { min-height: 52px; min-width: 110px; }
+  .strip .actions .btn { min-height: 52px; min-width: 96px; }
+  /* Narrow column (Performance two-column layout on a tablet): the label
+     goes above the master fader so the fader gets the block's full width
+     while master and the buttons still share a row. */
+  @container (max-width: 480px) {
+    .strip .master { flex-direction: column; align-items: stretch; gap: 0; }
+    .strip .master .lbl { font-size: 11px; }
+  }
+  /* (after the base strip rules so it wins) */
+  @container (min-width: 600px) and (max-width: 780px) {
+    .strip .actions { flex-direction: column; flex-wrap: nowrap; }
+    .strip .actions .btn { min-height: 44px; }
+  }
 </style>

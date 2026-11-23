@@ -104,12 +104,17 @@
   })();
   let leftW = $state<number>(saved.leftW ?? 420);
   let rightW = $state<number>(saved.rightW ?? 400);
+  // Separate right-pane width for the narrow layout (library in a drawer,
+  // e.g. a landscape tablet). null = default share of the width: with the
+  // library gone the decks would otherwise take ~900px while scenes and the
+  // soundboard, the things used most on a tablet, stay at the desktop 400.
+  let rightWNarrow = $state<number | null>(saved.rightWNarrow ?? null);
   let leftOpen = $state<boolean>(saved.leftOpen ?? true);
   let rightOpen = $state<boolean>(saved.rightOpen ?? true);
   let workW = $state(1400);
 
   function savePanes() {
-    local.set(PANES_KEY, JSON.stringify({ leftW, rightW, leftOpen, rightOpen, deckH: consoleH, queueFolded: queueCollapsed }));
+    local.set(PANES_KEY, JSON.stringify({ leftW, rightW, rightWNarrow, leftOpen, rightOpen, deckH: consoleH, queueFolded: queueCollapsed }));
   }
 
   // Below ~1340px there isn't room for three panes and a usable deck
@@ -124,8 +129,9 @@
   const eff = $derived.by(() => {
     const pad = 24; // .studio padding
     let l = leftOpen && !narrow ? Math.max(MIN_LEFT, Math.min(MAX_LEFT, leftW)) : 0;
-    let r = rightOpen ? Math.max(MIN_RIGHT, Math.min(MAX_RIGHT, rightW)) : 0;
     const gutters = (narrow ? 0 : leftOpen ? 14 : 30) + (rightOpen ? 14 : 30);
+    const wantR = narrow ? (rightWNarrow ?? Math.round((workW - pad - gutters) * 0.42)) : rightW;
+    let r = rightOpen ? Math.max(MIN_RIGHT, Math.min(MAX_RIGHT, wantR)) : 0;
     const over = l + r + gutters + pad + MIN_CENTER - workW;
     if (over > 0) {
       const takeR = Math.min(over, Math.max(0, r - MIN_RIGHT));
@@ -145,7 +151,7 @@
     if (!drag) return;
     const dx = e.clientX - drag.startX;
     if (drag.side === 'l') leftW = Math.max(MIN_LEFT, Math.min(MAX_LEFT, drag.start + dx));
-    else rightW = Math.max(MIN_RIGHT, Math.min(MAX_RIGHT, drag.start - dx));
+    else setRight(drag.start - dx);
   }
   function gutUp() {
     if (!drag) return;
@@ -162,8 +168,13 @@
     else return;
     e.preventDefault();
     if (side === 'l') leftW = Math.max(MIN_LEFT, Math.min(MAX_LEFT, eff.l + d));
-    else rightW = Math.max(MIN_RIGHT, Math.min(MAX_RIGHT, eff.r - d));
+    else setRight(eff.r - d);
     savePanes();
+  }
+  function setRight(w: number) {
+    const v = Math.max(MIN_RIGHT, Math.min(MAX_RIGHT, Math.round(w)));
+    if (narrow) rightWNarrow = v;
+    else rightW = v;
   }
   // ---- Centre column: console height and queue collapse, per device ----
   // Waveforms, then decks + mixer at their compact natural height (about
@@ -440,17 +451,26 @@
     {:else}
       <div class="perf-grid" class:with-lib={perfLib}>
         <div class="perf-main">
-          <div class="pdecks">
-            {#each [0, 1] as const as i (i)}
-              <DeckPanel {st} deck={i} {live} compact />
-            {/each}
-          </div>
-          <Mixer {st} {live} strip />
-          <div class="card scenes-box">
-            <ScenesPanel {st} {live} bind:scenes {tracks} {folders} {loaded} strip onchanged={load} />
-          </div>
-          <div class="card sb-box">
-            <SoundboardPanel bind:this={soundboard} {st} {live} big />
+          <!-- Wide (landscape tablet, desktop): decks + mixer on the left,
+               scenes + soundboard on the right at full height so the pads
+               are on screen without scrolling. Narrow: one column. -->
+          <div class="perf-cols">
+            <div class="pctl">
+              <div class="pdecks">
+                {#each [0, 1] as const as i (i)}
+                  <DeckPanel {st} deck={i} {live} compact />
+                {/each}
+              </div>
+              <Mixer {st} {live} strip />
+            </div>
+            <div class="ptrig">
+              <div class="card scenes-box">
+                <ScenesPanel {st} {live} bind:scenes {tracks} {folders} {loaded} strip onchanged={load} />
+              </div>
+              <div class="card sb-box">
+                <SoundboardPanel bind:this={soundboard} {st} {live} big />
+              </div>
+            </div>
           </div>
         </div>
         {#if perfLib}
@@ -539,6 +559,13 @@
   .pane { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
   .pane.right .scenes-box { flex: 0 1 auto; max-height: 44%; overflow-y: auto; padding: 12px 14px; }
   .pane.right .sb-box { flex: 1; min-height: 240px; padding: 12px 14px; overflow: hidden; }
+  /* Short screens (landscape tablets; 860 leaves 1080p and 900-tall laptop
+     windows alone): shorter scene tiles so
+     every scene and at least two rows of pads fit in the right pane. */
+  @media (max-height: 860px) {
+    .pane.right :global(.scene) { min-height: 84px; padding: 10px 12px; gap: 6px; }
+    .pane.right :global(.scenes-panel .grid) { gap: 10px; }
+  }
   /* Scrolls only when the decks, mixer and the queue's minimum don't fit
      (short windows, or the mixer stacked under the decks). */
   .center { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 12px; container-type: inline-size; overflow-y: auto; overscroll-behavior: contain; }
@@ -599,10 +626,24 @@
   /* ---- Performance ---- */
   .perf-grid { height: 100%; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 12px; min-height: 0; }
   .perf-grid.with-lib { grid-template-columns: minmax(0, 1fr) minmax(320px, 380px); }
-  .perf-main { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+  .perf-main { min-height: 0; overflow-y: auto; container-type: inline-size; }
+  .perf-cols { display: flex; flex-direction: column; gap: 10px; min-height: 100%; }
+  .pctl, .ptrig { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .ptrig { flex: 1 0 auto; }
   .pdecks { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .perf-main .scenes-box { padding: 10px 12px; flex-shrink: 0; }
   .perf-main .sb-box { padding: 10px 12px; flex: 1 0 auto; min-height: 260px; }
+  /* Two columns once there's room for 4 pads across beside the decks. The
+     right column is height-bounded so the pad grid scrolls inside the
+     soundboard instead of the page; min-height keeps it usable on very
+     short windows (then the page scrolls). */
+  @container (min-width: 940px) {
+    .perf-cols { display: grid; grid-template-columns: minmax(420px, 0.75fr) minmax(0, 1.25fr); align-items: stretch; height: 100%; min-height: 520px; }
+    .pctl { overflow-y: auto; min-height: 0; }
+    .pdecks { grid-template-columns: 1fr; gap: 10px; }
+    .ptrig { min-height: 0; }
+    .perf-main .sb-box { flex: 1 1 0; min-height: 300px; }
+  }
   .perf-lib { min-height: 0; display: flex; }
   .perf-lib :global(.lib) { flex: 1; }
   @media (max-width: 1000px) {

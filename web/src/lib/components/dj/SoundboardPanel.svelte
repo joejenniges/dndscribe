@@ -408,6 +408,9 @@
     </div>
   </header>
 
+  <!-- Search and tabs share a row when there's room (wraps when narrow), so
+       the pads start higher on short screens such as landscape tablets. -->
+  <div class="nav">
   {#if pads.length > 0}
     <div class="search">
       <input class="input" type="search" bind:this={searchEl} bind:value={query} onkeydown={searchKey}
@@ -442,6 +445,7 @@
         <button class="tab add" onclick={() => (addingTab = true)}>+ Tab</button>
       {/if}
     {/if}
+  </div>
   </div>
 
   {#if editMode && activeTab && !searching}
@@ -597,8 +601,12 @@
   }
   .add-pad .plus { font-size: 22px; color: var(--accent); }
   .hint { margin: 10px 0 0; }
-  .search { flex-shrink: 0; }
-  .search .input { width: 100%; }
+  .nav { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; flex-shrink: 0; }
+  .search { flex: 1 1 180px; max-width: 320px; min-width: 0; }
+  .search .input { width: 100%; min-height: 40px; }
+  /* min-width 0 lets the tabs scroll sideways instead of forcing a wrap;
+     the basis decides when they drop under the search box. */
+  .nav .tabstrip { flex: 999 1 180px; min-width: 0; }
   .tabstrip.dim { opacity: 0.55; }
   .results { margin: 0 0 8px; }
   .pad-tab { font-weight: 700; }

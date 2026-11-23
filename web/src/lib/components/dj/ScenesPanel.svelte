@@ -163,7 +163,7 @@
   .tools { display: flex; gap: 6px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
   .strip .grid { display: flex; overflow-x: auto; gap: 10px; padding-bottom: 4px; scroll-snap-type: x proximity; }
-  .strip .scene-wrap { flex: 0 0 200px; scroll-snap-align: start; }
+  .strip .scene-wrap { flex: 1 0 170px; max-width: 260px; scroll-snap-align: start; }
   .scene-wrap { position: relative; }
   .scene {
     --scene-color: var(--accent);
