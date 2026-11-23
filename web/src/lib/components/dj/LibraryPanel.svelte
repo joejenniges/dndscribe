@@ -51,7 +51,7 @@
     return false;
   };
 
-  // Playlist (folder) list: foldable, and its height is set by dragging the
+  // Playlist (folder) list: foldable from the "All music" row, and its height is set by dragging the
   // handle under it; the track list takes the rest. Both scroll on overflow.
   // null height = automatic (content up to 42% of the panel).
   const MIN_FOLDERS = 72;
@@ -174,6 +174,43 @@
     }
   }
 
+  // Rename edits the folder's own name in place (its parent stays the same).
+  let renaming = $state<string | null>(null);
+  let renameName = $state('');
+  function startRename(f: string) {
+    renaming = f;
+    renameName = folderName(f);
+  }
+  function focusSelect(el: HTMLInputElement) {
+    el.focus();
+    el.select();
+  }
+  async function submitRename() {
+    const from = renaming;
+    const name = renameName.trim();
+    renaming = null;
+    if (!from || !name || name === folderName(from)) return;
+    const to = [parentOf(from), name].filter(Boolean).join('/');
+    try {
+      await dj.folders.rename(from, to);
+      const move = (p: string) => (p === from ? to : inFolder(p, from) ? to + p.slice(from.length) : p);
+      if (selected) selected = move(selected);
+      if ([...collapsed].some((c) => c === from || inFolder(c, from))) {
+        collapsed = new Set([...collapsed].map(move));
+        local.set('dj.lib.collapsed', JSON.stringify([...collapsed]));
+      }
+      onchanged?.();
+    } catch (e) {
+      addToast(`Couldn't rename: ${(e as Error).message}`, 'error');
+    }
+  }
+  function renameKey(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      renaming = null;
+    }
+  }
+
   async function deleteTrack(t: DjTrack) {
     if (armed !== `t:${t.id}`) return arm(`t:${t.id}`);
     armed = null;
@@ -242,18 +279,14 @@
     </form>
   {/if}
 
-  <div class="folders-head">
-    <button class="fold" onclick={toggleFolders} aria-expanded={!foldersFolded} aria-controls="lib-folders"
-      title={foldersFolded ? 'Show playlists' : 'Hide playlists'}>
-      <span class="caret" aria-hidden="true">{foldersFolded ? '▸' : '▾'}</span>
-      <span class="tiny subtle">Playlists ({folders.length})</span>
-      {#if foldersFolded}<span class="tiny fold-sel">{selected ? folderName(selected) : 'All music'}</span>{/if}
-    </button>
-  </div>
-  {#if !foldersFolded}
-  <ul class="folders" id="lib-folders" aria-label="Folders" bind:this={foldersEl}
-    class:sized={foldersH !== null} style:height={foldersH !== null ? `${Math.min(foldersH, maxFolders)}px` : null}>
+  <ul class="folders" aria-label="Folders" bind:this={foldersEl}
+    class:sized={foldersH !== null && !foldersFolded}
+    style:height={foldersH !== null && !foldersFolded ? `${Math.min(foldersH, maxFolders)}px` : null}>
     <li class:selected={selected === ''} class:current={st?.folder === ''}>
+      {#if folders.length}
+        <button class="twist" onclick={toggleFolders} aria-expanded={!foldersFolded}
+          aria-label="{foldersFolded ? 'Expand' : 'Collapse'} all music">{foldersFolded ? '▸' : '▾'}</button>
+      {/if}
       <button class="row-main" onclick={() => (selected = '')}>
         <span class="row-title">All music</span>
         <span class="tiny subtle">{tracks.length}{libraryMs ? ` · ${fmtMs(libraryMs)}` : ''}</span>
@@ -262,7 +295,7 @@
         disabled={!live || !inVoice || tracks.length === 0 || pending !== null} aria-label="Play all music"
         title="Play all music (replaces the queue)">&#9654;</button>
     </li>
-    {#each folders as f (f)}
+    {#each foldersFolded ? [] : folders as f (f)}
       {#if !hidden(f)}
         {@const fs = stats.get(f)}
         <li class:selected={selected === f} class:current={st?.folder === f} style:--depth={folderDepth(f)}>
@@ -272,11 +305,19 @@
           {:else}
             <span class="twist" aria-hidden="true"></span>
           {/if}
-          <button class="row-main" onclick={() => (selected = f)}>
-            <span class="row-title">{folderName(f)}</span>
-            <span class="tiny subtle">{fs?.count ?? 0}{fs?.ms ? ` · ${fmtMs(fs.ms)}` : ''}</span>
-          </button>
-          {#if selected === f && !compact}
+          {#if renaming === f}
+            <form class="rename" onsubmit={(e) => { e.preventDefault(); submitRename(); }}>
+              <input class="input" bind:value={renameName} use:focusSelect onkeydown={renameKey} onblur={submitRename}
+                aria-label="New name for {folderName(f)}" />
+            </form>
+          {:else}
+            <button class="row-main" onclick={() => (selected = f)} ondblclick={() => !compact && startRename(f)}>
+              <span class="row-title">{folderName(f)}</span>
+              <span class="tiny subtle">{fs?.count ?? 0}{fs?.ms ? ` · ${fmtMs(fs.ms)}` : ''}</span>
+            </button>
+          {/if}
+          {#if selected === f && !compact && renaming !== f}
+            <button class="btn btn-sm" onclick={() => startRename(f)} aria-label="Rename folder {folderName(f)}">Rename</button>
             <button class="btn btn-sm" class:btn-danger={armed === `f:${f}`} onclick={() => deleteFolder(f)}
               aria-label="Delete folder {folderName(f)}">{armed === `f:${f}` ? 'Delete all?' : 'Delete'}</button>
           {/if}
@@ -287,6 +328,7 @@
       {/if}
     {/each}
   </ul>
+  {#if !foldersFolded && folders.length}
   <!-- A focusable separator is the ARIA window-splitter pattern (arrow keys
        resize); the lint rule doesn't know it. -->
   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
@@ -356,12 +398,7 @@
   .new-folder { display: flex; gap: 6px; padding: 0 12px 8px; }
   .new-folder .input { flex: 1; min-width: 0; }
   ul { list-style: none; margin: 0; padding: 0; }
-  .folders-head { border-top: 1px solid var(--border-color); padding: 0 6px; }
-  .fold { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px; padding: 4px 8px; background: none; border: 0; color: inherit; text-align: left; }
-  .fold:hover .subtle { color: var(--text); }
-  .caret { width: 12px; font-size: 12px; color: var(--text-3); }
-  .fold-sel { margin-left: auto; color: var(--accent-text, var(--accent)); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .folders { flex: 0 1 auto; max-height: 42%; overflow-y: auto; border-bottom: 1px solid var(--border-color); padding: 0 6px 4px; }
+  .folders { flex: 0 1 auto; max-height: 42%; overflow-y: auto; border-top: 1px solid var(--border-color); border-bottom: 1px solid var(--border-color); padding: 4px 6px; }
   /* A dragged height holds (the track list keeps MIN_TRACKS via maxFolders). */
   .folders.sized { flex: 0 0 auto; max-height: none; }
   .fgutter { flex-shrink: 0; height: 10px; margin: -5px 0; position: relative; z-index: 1; cursor: row-resize; touch-action: none; }
@@ -371,7 +408,10 @@
   .folders li { display: flex; align-items: center; gap: 4px; padding-left: calc(var(--depth, 0) * 14px); border-radius: var(--radius-sm); min-height: 44px; }
   .folders li.selected { background: var(--surface-raised); }
   .folders li.current .row-title { color: var(--accent-text, var(--accent)); }
-  .twist { width: 24px; height: 36px; flex-shrink: 0; background: none; border: 0; color: var(--text-3); font-size: 12px; padding: 0; }
+  .rename { flex: 1; min-width: 0; padding: 4px 4px 4px 0; }
+  .rename .input { width: 100%; min-height: 36px; padding: 4px 8px; }
+  .twist { width: 24px; height: 36px; flex-shrink: 0; background: none; border: 0; color: var(--text-2); font-size: 16px; line-height: 1; padding: 0; }
+  .twist:hover { color: var(--text); }
   .tracks-head { padding: 8px 14px 4px; }
   .tracks { flex: 1; min-height: 0; overflow-y: auto; padding: 0 6px 6px; }
   .tracks li { position: relative; display: flex; align-items: center; gap: 8px; padding: 2px 4px 2px 8px; min-height: 52px; border-bottom: 1px solid var(--border-color); border-radius: var(--radius-sm); }

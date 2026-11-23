@@ -237,6 +237,58 @@ func (l *Library) DeleteFolder(ctx context.Context, rel string) error {
 	return nil
 }
 
+// RenameFolder renames (or moves) a folder and rewrites the stored paths
+// under it. A case-only change ("curses" -> "Curses") is allowed even
+// though the target "exists" on a case-insensitive filesystem.
+func (l *Library) RenameFolder(ctx context.Context, from, to string) error {
+	if from == "" || to == "" {
+		return errors.New("folder name is required")
+	}
+	if from == to {
+		return nil
+	}
+	if strings.HasPrefix(to+"/", from+"/") {
+		return errors.New("can't move a folder inside itself")
+	}
+	src, err := l.abs(from)
+	if err != nil {
+		return err
+	}
+	dst, err := l.abs(to)
+	if err != nil {
+		return err
+	}
+	l.writeMu.Lock()
+	defer l.writeMu.Unlock()
+	if fi, err := os.Stat(src); err != nil || !fi.IsDir() {
+		return fmt.Errorf("folder %q not found", from)
+	}
+	if !strings.EqualFold(from, to) {
+		if _, err := os.Stat(dst); err == nil {
+			return fmt.Errorf("%q already exists", to)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(src, dst); err != nil {
+		// Windows refuses while ffmpeg has a file inside open.
+		if strings.Contains(strings.ToLower(err.Error()), "used by another process") ||
+			strings.Contains(strings.ToLower(err.Error()), "access is denied") {
+			return errors.New("a file in this folder is in use (loaded on a deck or playing); eject it and try again")
+		}
+		return err
+	}
+	if err := db.RenameDJFolder(ctx, from, to); err != nil {
+		// Keep disk and database in step: put the folder back.
+		if rerr := os.Rename(dst, src); rerr != nil {
+			return fmt.Errorf("%v (and moving the folder back failed: %v; rescan to recover)", err, rerr)
+		}
+		return err
+	}
+	return nil
+}
+
 func friendlyRemoveErr(err error) error {
 	// Windows won't delete a file ffmpeg has open.
 	if strings.Contains(strings.ToLower(err.Error()), "used by another process") {

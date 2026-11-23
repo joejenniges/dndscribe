@@ -284,6 +284,7 @@ export const dj = {
   folders: {
     list: () => request<string[]>('/api/dj/folders'),
     create: (path: string) => post<{ path: string }>('/api/dj/folders', { path }),
+    rename: (from: string, to: string) => post<{ path: string }>('/api/dj/folders/rename', { from, to }),
     delete: (path: string) =>
       request<{ success: boolean }>(`/api/dj/folders?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
   },

@@ -238,6 +238,31 @@ func NewHandler(engine *Engine, library *Library, sb *Soundboard, waves *Wavefor
 		h.changed()
 		writeJSON(w, http.StatusCreated, map[string]string{"path": rel})
 	})
+	m.HandleFunc("POST /api/dj/folders/rename", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			From string `json:"from"`
+			To   string `json:"to"`
+		}
+		if err := readBody(r, &body); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		from, err := CleanRelPath(body.From)
+		var to string
+		if err == nil {
+			to, err = CleanRelPath(body.To)
+		}
+		if err == nil {
+			err = h.library.RenameFolder(r.Context(), from, to)
+		}
+		if err != nil {
+			writeErr(w, http.StatusConflict, err.Error())
+			return
+		}
+		h.engine.RepathFolder(from, to)
+		h.changed()
+		writeJSON(w, http.StatusOK, map[string]string{"path": to})
+	})
 	m.HandleFunc("DELETE /api/dj/folders", func(w http.ResponseWriter, r *http.Request) {
 		rel, err := CleanRelPath(r.URL.Query().Get("path"))
 		if err == nil {

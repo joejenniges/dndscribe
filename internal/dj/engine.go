@@ -504,6 +504,43 @@ func tracksInFolders(ctx context.Context, folders []string) ([]db.DJTrack, error
 	return out, nil
 }
 
+// RepathFolder points queued and loaded items at their new location after
+// a folder rename. Items capture the file path when built (trackItem), so
+// without this a queued track from the renamed folder would fail to open.
+func (e *Engine) RepathFolder(from, to string) {
+	defer e.notify()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	fix := func(it *item) {
+		if it == nil || it.track == nil || !inFolder(it.track.Path, from) {
+			return
+		}
+		t := *it.track
+		t.Path = to + t.Path[len(from):]
+		n := e.trackItem(t)
+		n.sceneID, n.scale = it.sceneID, it.scale
+		*it = n
+	}
+	for i := range e.q.entries {
+		fix(&e.q.entries[i].it)
+	}
+	for i := range e.q.source {
+		fix(&e.q.source[i])
+	}
+	if f := e.q.folder; f != nil && (*f == from || inFolder(*f, from)) {
+		nf := to + (*f)[len(from):]
+		e.q.folder = &nf
+		if *f == from {
+			e.q.name = path.Base(to)
+		}
+	}
+	for _, d := range e.decks {
+		if d.v != nil {
+			fix(d.v.item)
+		}
+	}
+}
+
 func inFolder(trackPath, folder string) bool {
 	return folder == "" || strings.HasPrefix(trackPath, folder+"/")
 }

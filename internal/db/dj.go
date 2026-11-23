@@ -157,6 +157,34 @@ func DeleteDJTracksUnder(ctx context.Context, folder string) error {
 	return err
 }
 
+// RenameDJFolder rewrites stored paths after a folder is renamed on disk:
+// track paths under it and scene folder lists that name it or a sub-folder.
+// Track ids are kept, so the queue, decks, history and waveform cache still
+// point at the same rows.
+func RenameDJFolder(ctx context.Context, from, to string) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	// substr/length count characters on both sides, so multi-byte names are fine.
+	if _, err := tx.Exec(ctx, `
+		UPDATE dj_tracks SET path = $2 || substr(path, length($1) + 1)
+		WHERE starts_with(path, $1 || '/')`, from, to); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE dj_scenes SET folders = ARRAY(
+			SELECT CASE WHEN f = $1 THEN $2
+			            WHEN starts_with(f, $1 || '/') THEN $2 || substr(f, length($1) + 1)
+			            ELSE f END
+			FROM unnest(folders) WITH ORDINALITY AS u(f, n) ORDER BY n)
+		WHERE EXISTS (SELECT 1 FROM unnest(folders) f WHERE f = $1 OR starts_with(f, $1 || '/'))`, from, to); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // ---- Scenes ----
 
 const sceneCols = `id, name, folders, color, volume, shuffle, loop, fade_seconds, position, image_key`
