@@ -51,6 +51,64 @@
     return false;
   };
 
+  // Playlist (folder) list: foldable, and its height is set by dragging the
+  // handle under it; the track list takes the rest. Both scroll on overflow.
+  // null height = automatic (content up to 42% of the panel).
+  const MIN_FOLDERS = 72;
+  const MIN_TRACKS = 140;
+  let foldersFolded = $state(local.get('dj.lib.foldersFolded') === '1');
+  let foldersH = $state<number | null>(Number(local.get('dj.lib.foldersH')) || null);
+  let libH = $state(0);
+  let libEl = $state<HTMLElement | null>(null);
+  let foldersEl = $state<HTMLElement | null>(null);
+  // Space above the list plus the track-list header, measured from the
+  // panel's own box (offsetTop would be relative to some outer ancestor).
+  let chrome = $state(150);
+  $effect(() => {
+    libH;
+    if (!libEl || !foldersEl) return;
+    const head = libEl.querySelector('.tracks-head') as HTMLElement | null;
+    chrome = foldersEl.getBoundingClientRect().top - libEl.getBoundingClientRect().top + (head?.offsetHeight ?? 0) + 10;
+  });
+  const maxFolders = $derived(Math.max(MIN_FOLDERS, libH - chrome - MIN_TRACKS));
+  function saveFolders() {
+    local.set('dj.lib.foldersFolded', foldersFolded ? '1' : '0');
+    local.set('dj.lib.foldersH', foldersH ? String(foldersH) : '');
+  }
+  function toggleFolders() {
+    foldersFolded = !foldersFolded;
+    saveFolders();
+  }
+  function setFoldersH(h: number) {
+    foldersH = Math.max(MIN_FOLDERS, Math.min(maxFolders, Math.round(h)));
+  }
+  let fdrag: { startY: number; start: number } | null = null;
+  function fDown(e: PointerEvent) {
+    if (e.button !== 0) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    fdrag = { startY: e.clientY, start: foldersEl?.offsetHeight ?? 200 };
+  }
+  function fMove(e: PointerEvent) {
+    if (fdrag) setFoldersH(fdrag.start + (e.clientY - fdrag.startY));
+  }
+  function fUp() {
+    if (!fdrag) return;
+    fdrag = null;
+    saveFolders();
+  }
+  function fKey(e: KeyboardEvent) {
+    const step = e.shiftKey ? 80 : 20;
+    let d = 0;
+    if (e.key === 'ArrowUp') d = -step;
+    else if (e.key === 'ArrowDown') d = step;
+    else if (e.key === 'Home') foldersH = null; // back to automatic
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (d) setFoldersH((foldersEl?.offsetHeight ?? 200) + d);
+    saveFolders();
+  }
+
   let query = $state('');
   const visibleTracks = $derived.by(() => {
     const q = query.trim().toLowerCase();
@@ -160,7 +218,7 @@
   }
 </script>
 
-<section class="lib card" class:compact class:stale={!live} aria-label="Music library">
+<section class="lib card" class:compact class:stale={!live} aria-label="Music library" bind:clientHeight={libH} bind:this={libEl}>
   <header>
     <h2 class="section-title">Library</h2>
     {#if !compact}
@@ -184,7 +242,17 @@
     </form>
   {/if}
 
-  <ul class="folders" aria-label="Folders">
+  <div class="folders-head">
+    <button class="fold" onclick={toggleFolders} aria-expanded={!foldersFolded} aria-controls="lib-folders"
+      title={foldersFolded ? 'Show playlists' : 'Hide playlists'}>
+      <span class="caret" aria-hidden="true">{foldersFolded ? '▸' : '▾'}</span>
+      <span class="tiny subtle">Playlists ({folders.length})</span>
+      {#if foldersFolded}<span class="tiny fold-sel">{selected ? folderName(selected) : 'All music'}</span>{/if}
+    </button>
+  </div>
+  {#if !foldersFolded}
+  <ul class="folders" id="lib-folders" aria-label="Folders" bind:this={foldersEl}
+    class:sized={foldersH !== null} style:height={foldersH !== null ? `${Math.min(foldersH, maxFolders)}px` : null}>
     <li class:selected={selected === ''} class:current={st?.folder === ''}>
       <button class="row-main" onclick={() => (selected = '')}>
         <span class="row-title">All music</span>
@@ -219,6 +287,14 @@
       {/if}
     {/each}
   </ul>
+  <!-- A focusable separator is the ARIA window-splitter pattern (arrow keys
+       resize); the lint rule doesn't know it. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+  <div class="fgutter" role="separator" aria-orientation="horizontal" aria-label="Resize playlists (Home: automatic)"
+    aria-valuemin={MIN_FOLDERS} aria-valuemax={maxFolders} aria-valuenow={foldersH ?? undefined} tabindex="0"
+    onpointerdown={fDown} onpointermove={fMove} onpointerup={fUp} onpointercancel={fUp} onkeydown={fKey}
+    ondblclick={() => { foldersH = null; saveFolders(); }}></div>
+  {/if}
 
   <div class="tracks-head">
     <span class="tiny subtle">
@@ -280,7 +356,18 @@
   .new-folder { display: flex; gap: 6px; padding: 0 12px 8px; }
   .new-folder .input { flex: 1; min-width: 0; }
   ul { list-style: none; margin: 0; padding: 0; }
-  .folders { flex: 0 1 auto; max-height: 42%; overflow-y: auto; border-top: 1px solid var(--border-color); border-bottom: 1px solid var(--border-color); padding: 4px 6px; }
+  .folders-head { border-top: 1px solid var(--border-color); padding: 0 6px; }
+  .fold { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px; padding: 4px 8px; background: none; border: 0; color: inherit; text-align: left; }
+  .fold:hover .subtle { color: var(--text); }
+  .caret { width: 12px; font-size: 12px; color: var(--text-3); }
+  .fold-sel { margin-left: auto; color: var(--accent-text, var(--accent)); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .folders { flex: 0 1 auto; max-height: 42%; overflow-y: auto; border-bottom: 1px solid var(--border-color); padding: 0 6px 4px; }
+  /* A dragged height holds (the track list keeps MIN_TRACKS via maxFolders). */
+  .folders.sized { flex: 0 0 auto; max-height: none; }
+  .fgutter { flex-shrink: 0; height: 10px; margin: -5px 0; position: relative; z-index: 1; cursor: row-resize; touch-action: none; }
+  .fgutter::after { content: ''; position: absolute; left: 50%; top: 50%; width: 40px; height: 4px; transform: translate(-50%, -50%); border-radius: 2px; background: var(--border-strong); }
+  .fgutter:hover::after, .fgutter:focus-visible::after { background: var(--accent); }
+  .fgutter:focus-visible { outline: none; }
   .folders li { display: flex; align-items: center; gap: 4px; padding-left: calc(var(--depth, 0) * 14px); border-radius: var(--radius-sm); min-height: 44px; }
   .folders li.selected { background: var(--surface-raised); }
   .folders li.current .row-title { color: var(--accent-text, var(--accent)); }
