@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -93,7 +94,18 @@ func migrateDJ(ctx context.Context) error {
 
 // ---- Tracks ----
 
-const trackCols = `id, path, title, artist, duration_ms, missing, size_bytes, COALESCE(mod_time, 'epoch'::timestamptz)`
+// trackCols reads a track. The title is the file's tag title, except when
+// another track has the same tag title: then it's blank, so every display
+// falls back to the file name. WHY: tags copied between files (a pack where
+// "Boss Fight 30.mp3" is tagged "Boss Fight 29") otherwise list as two
+// identical rows with no way to tell them apart. Done here, at read time,
+// so the library, the queue and the decks all agree and the stored tag
+// stays as probed.
+const trackCols = `id, path,
+	CASE WHEN title <> '' AND EXISTS (
+		SELECT 1 FROM dj_tracks o WHERE o.id <> dj_tracks.id AND LOWER(o.title) = LOWER(dj_tracks.title)
+	) THEN '' ELSE title END,
+	artist, duration_ms, missing, size_bytes, COALESCE(mod_time, 'epoch'::timestamptz)`
 
 func scanTrack(row pgx.Row) (DJTrack, error) {
 	var t DJTrack
@@ -102,7 +114,7 @@ func scanTrack(row pgx.Row) (DJTrack, error) {
 }
 
 func ListDJTracks(ctx context.Context) ([]DJTrack, error) {
-	rows, err := pool.Query(ctx, `SELECT `+trackCols+` FROM dj_tracks ORDER BY LOWER(path) COLLATE "C"`)
+	rows, err := pool.Query(ctx, `SELECT `+trackCols+` FROM dj_tracks`)
 	if err != nil {
 		return nil, fmt.Errorf("list dj tracks: %w", err)
 	}
@@ -115,7 +127,13 @@ func ListDJTracks(ctx context.Context) ([]DJTrack, error) {
 		}
 		out = append(out, t)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Natural order ("Boss Fight 2" before "Boss Fight 10"). Postgres has no
+	// numeric-aware collation without ICU, so sort here.
+	sort.SliceStable(out, func(i, j int) bool { return NaturalLess(out[i].Path, out[j].Path) })
+	return out, nil
 }
 
 func GetDJTrack(ctx context.Context, id int64) (*DJTrack, error) {

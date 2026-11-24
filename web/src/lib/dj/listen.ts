@@ -15,7 +15,7 @@
 import { writable, get } from 'svelte/store';
 import type { OpusDecoder as OpusDecoderT } from 'opus-decoder';
 
-export type ListenState = 'off' | 'connecting' | 'blocked' | 'on' | 'error' | 'elsewhere';
+export type ListenState = 'off' | 'connecting' | 'blocked' | 'on' | 'error' | 'elsewhere' | 'unreachable';
 
 const PREF = 'dj.listen';
 /** Whether this device wants to hear the test channel (remembered). */
@@ -70,6 +70,9 @@ let running = false;
 let gen = 0;
 let retry: ReturnType<typeof setTimeout> | null = null;
 let backoff = 500;
+// Socket attempts that closed without ever opening. After a few, say so
+// ('unreachable') instead of showing "connecting" forever; retries go on.
+let failures = 0;
 
 function url(): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -126,6 +129,7 @@ export function stopListening(remember = true): void {
   ws?.close();
   ws = null;
   next = 0;
+  failures = 0;
   if (ctx && ctx.state === 'running') ctx.suspend().catch(() => {});
   removeUnlock();
   listenState.set('off');
@@ -170,7 +174,10 @@ function open() {
   const sock = new WebSocket(url());
   sock.binaryType = 'arraybuffer';
   ws = sock;
+  let opened = false;
   sock.onopen = () => {
+    opened = true;
+    failures = 0;
     backoff = 500;
     if (get(listenState) !== 'blocked') listenState.set('on');
   };
@@ -181,7 +188,8 @@ function open() {
     if (ws !== sock) return;
     ws = null;
     if (!running) return;
-    if (get(listenState) !== 'blocked') listenState.set('connecting');
+    if (!opened) failures++;
+    if (get(listenState) !== 'blocked') listenState.set(failures >= 3 ? 'unreachable' : 'connecting');
     retry = setTimeout(open, backoff);
     backoff = Math.min(backoff * 2, 8000);
   };

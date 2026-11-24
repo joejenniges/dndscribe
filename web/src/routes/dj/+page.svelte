@@ -335,15 +335,11 @@
       <button role="radio" aria-checked={mode === 'studio'} class:on={mode === 'studio'} onclick={() => setMode('studio')}>Studio</button>
       <button role="radio" aria-checked={mode === 'performance'} class:on={mode === 'performance'} onclick={() => setMode('performance')}>Performance</button>
     </div>
-    <span class="sync" class:down={!live} role="status">
-      <span class="dot" aria-hidden="true"></span>
-      {#if live}Live{devices ? ` · ${devices}` : ''}{:else}Reconnecting…{/if}
-    </span>
     {#if st?.error}
       <span class="err tiny" title={st.error}>{st.error}</span>
     {/if}
     <div class="head-right">
-      <VoiceControl {st} {live} />
+      <VoiceControl {st} {live} {devices} />
       {#if hasKeyboard}
         <button class="btn btn-sm keys-btn" onclick={() => (keysOpen = true)} title="Keyboard shortcuts (?)"
           aria-label="Keyboard shortcuts">
@@ -562,9 +558,6 @@
   .modes { display: flex; padding: 3px; gap: 3px; background: var(--surface-sunken); border: 1px solid var(--border-color); border-radius: var(--radius); }
   .modes button { min-height: 38px; padding: 0 14px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--text-2); font-weight: 600; font-size: 13px; }
   .modes button.on { background: var(--accent-strong); color: #fff; }
-  .sync { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--success); }
-  .sync .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
-  .sync.down { color: var(--warning); }
   .err { color: var(--warning); max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .head-right { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .offline { padding: 8px 16px; background: var(--warning-soft); color: var(--warning); font-size: 13px; }

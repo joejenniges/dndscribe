@@ -1,11 +1,10 @@
 <script lang="ts">
-  // Persistent bottom bar: Discord voice status, what the audience hears
-  // and Stop all. Master volume is in the mixer. No previous/next/pause here: those live on
+  // Persistent bottom bar: what the audience hears and Stop all. Voice and
+  // server status live in one place only, the header's VoiceControl. Master volume is in the mixer. No previous/next/pause here: those live on
   // the decks and the mixer, so there's one place for each control.
   import { djCmd } from '$lib/dj/control';
   import { deckPosition, heardDeck, DECK_NAMES } from '$lib/dj/live';
   import { clock } from '$lib/dj/clock';
-  import { botStatus } from '$lib/stores/ws';
   import { addToast } from '$lib/stores/toast';
   import type { DjState } from '$lib/types';
   import { fmtMs } from './format';
@@ -28,14 +27,6 @@
 </script>
 
 <footer class="bar" class:stale={!live}>
-  <div class="discord" class:ok={inVoice}>
-    <span class="dot" aria-hidden="true"></span>
-    <span class="txt">
-      <strong>{inVoice ? 'Discord connected' : 'Not in voice'}</strong>
-      <span class="tiny subtle">{inVoice ? ($botStatus.channelName ?? 'Voice') : 'Join a channel to play'}</span>
-    </span>
-  </div>
-
   <div class="air">
     {#if airDeck?.track}
       <span class="tag deck-{air}" aria-hidden="true">{DECK_NAMES[air]}</span>
@@ -65,10 +56,6 @@
   .stale { opacity: 0.7; }
   .txt { display: flex; flex-direction: column; min-width: 0; }
   .txt strong { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .discord { display: flex; align-items: center; gap: 10px; flex-shrink: 0; color: var(--warning); }
-  .discord.ok { color: var(--success); }
-  .discord strong { color: inherit; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
   .air { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; }
   .tag { width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center; font-weight: 800; font-size: 12px; color: #111; flex-shrink: 0; background: var(--deck-a); }
   .tag.deck-1 { background: var(--deck-b); }
@@ -77,6 +64,5 @@
   .stop { min-height: 44px; flex-shrink: 0; }
   @media (max-width: 900px) {
     .bar { flex-wrap: wrap; gap: 10px; }
-    .discord .tiny { display: none; }
   }
 </style>

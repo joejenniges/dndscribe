@@ -35,6 +35,10 @@
   const libraryMs = $derived(tracks.reduce((s, t) => s + t.durationMs, 0));
   const inVoice = $derived(!!st?.connected);
   const deckTrackIds = $derived(new Set((st?.decks ?? []).map((d) => d.track?.id).filter(Boolean)));
+  // The queue's source folder: "Playing" while a deck plays, else "Queued".
+  const srcChip = $derived(st?.decks?.some((d) => d.playing && d.track) ? 'Playing' : 'Queued');
+  // Deck letters a track is loaded on ("A", "B", "AB"), for the row badge.
+  const onDecks = (id: number) => (st?.decks ?? []).map((d, i) => (d.track?.id === id ? 'AB'[i] : '')).join('');
 
   // Collapsed folders are a per-device view preference.
   let collapsed = $state<Set<string>>(new Set(JSON.parse(local.get('dj.lib.collapsed') ?? '[]')));
@@ -383,8 +387,8 @@
         <button class="twist" onclick={toggleFolders} aria-expanded={!foldersFolded}
           aria-label="{foldersFolded ? 'Expand' : 'Collapse'} all music">{foldersFolded ? '▸' : '▾'}</button>
       {/if}
-      <button class="row-main" onclick={() => (selected = '')}>
-        <span class="row-title">All music</span>
+      <button class="row-main" onclick={() => (selected = '')} aria-current={selected === '' ? 'true' : undefined}>
+        <span class="row-title">All music{#if st?.folder === ''}<span class="state-chip" title="The queue comes from all music">{srcChip}</span>{/if}</span>
         <span class="tiny subtle">{tracks.length}{libraryMs ? ` · ${fmtMs(libraryMs)}` : ''}</span>
       </button>
       <button class="icon-btn play" onclick={() => run('f:', 'folder.play', { folder: '' })}
@@ -413,10 +417,10 @@
                 aria-label="New name for {folderName(f)}" />
             </form>
           {:else}
-            <button class="row-main" onclick={() => (selected = f)} ondblclick={() => !compact && startRename(f)}
+            <button class="row-main" onclick={() => (selected = f)} aria-current={selected === f ? 'true' : undefined} ondblclick={() => !compact && startRename(f)}
               onkeydown={(e) => folderKey(e, f)}
               title={compact ? undefined : 'Drag to rearrange, or onto another folder to put it inside (Alt+arrow keys also work). Double-click to rename.'}>
-              <span class="row-title">{folderName(f)}</span>
+              <span class="row-title">{folderName(f)}{#if st?.folder === f}<span class="state-chip" title="The queue comes from this folder">{srcChip}</span>{/if}</span>
               <span class="tiny subtle">{fs?.count ?? 0}{fs?.ms ? ` · ${fmtMs(fs.ms)}` : ''}</span>
             </button>
           {/if}
@@ -456,7 +460,7 @@
       {#each visibleTracks as t (t.id)}
         <li class:missing={t.missing} class:current={deckTrackIds.has(t.id)} class:menu-open={menuFor === t.id}>
           <span class="row-main static">
-            <span class="row-title" title={trackTitle(t)}>{trackTitle(t)}</span>
+            <span class="row-title" title={trackTitle(t)}>{trackTitle(t)}{#each onDecks(t.id) as l (l)}<span class="state-chip deck-{l}" title="Loaded on deck {l}">On {l}</span>{/each}</span>
             <span class="tiny subtle">{[t.artist, shownPath(t)].filter(Boolean).join(' · ') || ' '}</span>
           </span>
           <span class="dur">{t.durationMs ? fmtMs(t.durationMs) : ''}</span>
@@ -510,8 +514,18 @@
   .fgutter:hover::after, .fgutter:focus-visible::after { background: var(--accent); }
   .fgutter:focus-visible { outline: none; }
   .folders li { display: flex; align-items: center; gap: 4px; padding-left: calc(var(--depth, 0) * 14px); border-radius: var(--radius-sm); min-height: 44px; }
-  .folders li.selected { background: var(--surface-raised); }
-  .folders li.current .row-title { color: var(--accent-text, var(--accent)); }
+  /* Selected = the folder whose tracks are listed below: a filled row with
+     a bar. "Playing" (the queue's source) and "On A/B" (loaded on a deck)
+     are labelled chips, so neither is mistaken for the selection. */
+  .folders li.selected { background: color-mix(in srgb, var(--accent) 12%, var(--surface-raised)); box-shadow: inset 3px 0 0 var(--accent); }
+  .folders li.selected .row-title { color: var(--text); }
+  .state-chip {
+    display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; vertical-align: 1px;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase;
+    color: var(--success); border: 1px solid color-mix(in srgb, var(--success) 55%, transparent);
+  }
+  .state-chip.deck-A { color: var(--deck-a); border-color: color-mix(in srgb, var(--deck-a) 55%, transparent); }
+  .state-chip.deck-B { color: var(--deck-b); border-color: color-mix(in srgb, var(--deck-b) 55%, transparent); }
   .folders li[draggable='true'] { cursor: grab; }
   .folders li.dragging { opacity: 0.45; }
   .folders li.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
@@ -538,7 +552,6 @@
   .row-menu .danger { color: var(--danger); }
   .row-menu hr { border: 0; border-top: 1px solid var(--border-color); margin: 4px 0; }
   .tracks li:last-child { border-bottom: 0; }
-  .tracks li.current .row-title { color: var(--accent-text, var(--accent)); }
   .tracks li.missing .row-title { color: var(--text-3); text-decoration: line-through; }
   .row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; text-align: left; padding: 6px 4px; background: none; border: 0; color: inherit; }
   button.row-main:hover .row-title { text-decoration: underline; }

@@ -125,9 +125,8 @@
             <span class="scene-name" title={s.name}>{s.name}</span>
             <span class="scene-foot">
               <span class="scene-meta">
-                {#if state === 'starting'}Starting…
-                {:else if state === 'playing'}Playing
-                {:else if state === 'paused'}Paused
+                {#if state}
+                  <span class="pill {state}">{state === 'starting' ? 'Starting…' : state === 'playing' ? 'Playing' : 'Paused'}</span>
                 {:else if s.folders.length}{trackCount(s)}
                 {:else}No music folders{/if}
               </span>
@@ -198,7 +197,9 @@
     border-color: var(--scene-color);
     box-shadow: 0 0 0 1px var(--scene-color), 0 6px 24px color-mix(in srgb, var(--scene-color) 25%, transparent);
   }
-  .scene.paused { border-color: var(--scene-color); }
+  /* Paused: no glow, just the labelled pill below. A coloured border alone
+     read as "selected" or "error". The 5px top stripe is the scene's own
+     colour on every tile, not a state. */
   .scene:disabled { opacity: 0.6; cursor: not-allowed; }
   .scene.empty { border: 1px dashed var(--border-strong); color: var(--text-2); min-height: 96px; background-image: none; }
   /* Name pinned to the top, count and flags to the bottom, so every tile
@@ -206,8 +207,14 @@
   .scene-name { font-size: 17px; font-weight: 700; line-height: 1.3; padding-right: 34px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .scene-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 18px; }
   .scene-meta { font-size: 13px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .scene.active .scene-meta { color: var(--scene-color); font-weight: 600; }
-  .scene.hasimg.active .scene-meta { color: #fff; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px;
+    font-size: 12px; font-weight: 700; color: var(--text); background: var(--surface-sunken); border: 1px solid var(--border-strong);
+  }
+  .pill::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
+  .pill.playing, .pill.starting { color: #111; background: var(--success); border-color: var(--success); }
+  .pill.playing::before, .pill.starting::before { background: #111; }
+  .pill.paused::before { width: 6px; height: 8px; border-radius: 0; background: none; border-left: 2px solid currentColor; border-right: 2px solid currentColor; }
   .scene.active::after {
     content: ''; position: absolute; inset: 0; pointer-events: none;
     background: color-mix(in srgb, var(--scene-color) 14%, transparent);

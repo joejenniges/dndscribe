@@ -13,7 +13,10 @@
   import { listenWanted, listenState, startListening, stopListening } from '$lib/dj/listen';
   import type { DjState, VoiceChannel } from '$lib/types';
 
-  let { st, live }: { st: DjState | null; live: boolean } = $props();
+  // The one place the page shows connection state: server link, voice
+  // channel and (test channel) browser audio. Other devices on the page are
+  // in the tooltip.
+  let { st, live, devices = '' }: { st: DjState | null; live: boolean; devices?: string } = $props();
 
   const inVoice = $derived(!!st?.connected);
   const TEST_ID = 'test-channel';
@@ -35,14 +38,19 @@
     if ($listenWanted && $listenState !== 'blocked' && $listenState !== 'elsewhere') stopListening();
     else void startListening();
   }
+  // 'off' while wanted (between leaving and the effect restarting it) reads
+  // as "Listen here", not "Connecting…": that used to look stuck.
   const listenLabel = $derived(
     !$listenWanted ? 'Listen here'
       : $listenState === 'on' ? 'Listening'
       : $listenState === 'blocked' ? 'Tap to hear'
       : $listenState === 'error' ? "Can't play audio"
+      : $listenState === 'unreachable' ? 'Audio unavailable, retrying'
       : $listenState === 'elsewhere' ? 'Playing in another tab'
-      : 'Connecting…',
+      : $listenState === 'connecting' ? 'Starting audio…'
+      : 'Listen here',
   );
+  const tip = $derived(devices ? `Also open on: ${devices}` : undefined);
   let channelList = $state<VoiceChannel[]>([]);
   let joinChannelId = $state('');
   let busy = $state(false);
@@ -100,10 +108,16 @@
 </script>
 
 <div class="voice">
-  {#if $botStatus.recording || $botStatus.musicOnly}
-    <span class="state" class:ok={inVoice}>
+  {#if !live}
+    <span class="state off" role="status" title={tip}><span class="dot" aria-hidden="true"></span>Server offline, reconnecting…</span>
+  {:else if $botStatus.recording || $botStatus.musicOnly}
+    <span class="state" class:ok={inVoice} role="status" title={tip}>
       <span class="dot" aria-hidden="true"></span>
-      {inVoice ? 'In' : 'Connecting to'} {$botStatus.channelName ?? 'voice'}{$botStatus.recording ? ' (recording)' : ''}
+      {#if inTest}
+        Test channel{inVoice ? '' : ' (starting)'}
+      {:else}
+        {inVoice ? 'In' : 'Connecting to'} {$botStatus.channelName ?? 'voice'}{$botStatus.recording ? ' (recording)' : ''}
+      {/if}
     </span>
     {#if $botStatus.musicOnly}
       <button class="btn btn-sm" onclick={leave} disabled={busy}>Leave</button>
@@ -119,7 +133,7 @@
     <button class="btn btn-sm btn-ghost" onclick={tone} disabled={!inVoice || !live}
       title="Play a 2 second 440 Hz tone to check the bot can be heard">Test tone</button>
   {:else}
-    <span class="state off"><span class="dot" aria-hidden="true"></span>Not in voice</span>
+    <span class="state off" role="status" title={tip}><span class="dot" aria-hidden="true"></span>Not in voice</span>
     <select class="select" bind:value={joinChannelId} aria-label="Voice channel for music">
       {#each channelList as c (c.id)}
         <option value={c.id}>{c.name}{c.members.length ? ` (${c.members.length})` : ''}</option>
